@@ -1,0 +1,2631 @@
+{
+  "uid": "perfops-blokus-use",
+  "title": "PerfOps Blokus — OS Layer 1 (USE Method)",
+  "description": "USE method (Errors → Saturation → Utilization) per resource: CPU, Memory, Network, Storage I/O, Storage capacity.",
+  "tags": [
+    "blokus",
+    "use-method",
+    "os",
+    "perfops"
+  ],
+  "timezone": "browser",
+  "editable": true,
+  "graphTooltip": 1,
+  "schemaVersion": 39,
+  "version": 4,
+  "refresh": "30s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "timepicker": {
+    "refresh_intervals": [
+      "10s",
+      "30s",
+      "1m",
+      "5m"
+    ]
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "label": "Data source",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {},
+        "hide": 0
+      },
+      {
+        "name": "instance",
+        "label": "Host",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "query": {
+          "query": "label_values(node_uname_info, instance)",
+          "refId": "instance"
+        },
+        "definition": "label_values(node_uname_info, instance)",
+        "refresh": 2,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "sort": 1,
+        "hide": 2
+      },
+      {
+        "name": "range",
+        "label": "Summary range",
+        "type": "custom",
+        "query": "1 hour : 1h, 7 days : 7d",
+        "multi": false,
+        "includeAll": false,
+        "current": {
+          "text": "1 hour",
+          "value": "1h"
+        },
+        "options": [
+          {
+            "text": "1 hour",
+            "value": "1h",
+            "selected": true
+          },
+          {
+            "text": "7 days",
+            "value": "7d",
+            "selected": false
+          }
+        ]
+      },
+      {
+        "name": "core_view",
+        "label": "Core view",
+        "type": "custom",
+        "query": "Per core : instance\\,cpu, All cores together : instance",
+        "multi": false,
+        "includeAll": false,
+        "current": {
+          "text": "Per core",
+          "value": "instance,cpu"
+        },
+        "options": [
+          {
+            "text": "Per core",
+            "value": "instance,cpu",
+            "selected": true
+          },
+          {
+            "text": "All cores together",
+            "value": "instance",
+            "selected": false
+          }
+        ]
+      },
+      {
+        "name": "core",
+        "label": "CPU core",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "query": {
+          "query": "label_values(node_cpu_seconds_total{instance=~\"$instance\"}, cpu)",
+          "refId": "core"
+        },
+        "definition": "label_values(node_cpu_seconds_total{instance=~\"$instance\"}, cpu)",
+        "refresh": 2,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "sort": 3
+      },
+      {
+        "name": "device",
+        "label": "Disk",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "query": {
+          "query": "label_values(node_disk_io_time_seconds_total{instance=~\"$instance\"}, device)",
+          "refId": "device"
+        },
+        "definition": "label_values(node_disk_io_time_seconds_total{instance=~\"$instance\"}, device)",
+        "refresh": 2,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "sort": 3,
+        "regex": "/^(?!loop|ram|fd|sr).*$/",
+        "hide": 2
+      },
+      {
+        "name": "nic",
+        "label": "Network interface",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "query": {
+          "query": "label_values(node_network_receive_bytes_total{instance=~\"$instance\"}, device)",
+          "refId": "nic"
+        },
+        "definition": "label_values(node_network_receive_bytes_total{instance=~\"$instance\"}, device)",
+        "refresh": 2,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "sort": 3,
+        "regex": "/^(?!lo$|veth|docker|br-).*$/",
+        "hide": 2
+      },
+      {
+        "name": "max_iops",
+        "label": "Max IOPS",
+        "description": "Measured with fio (4k random read/write, ~21.8k read + ~21.8k write IOPS). Set to 0 to hide the limit line.",
+        "type": "textbox",
+        "query": "43000",
+        "hide": 2,
+        "current": {
+          "text": "43000",
+          "value": "43000"
+        },
+        "options": [
+          {
+            "selected": true,
+            "text": "43000",
+            "value": "43000"
+          }
+        ]
+      },
+      {
+        "name": "max_disk_bw_mbps",
+        "label": "Max disk bandwidth (MB/s)",
+        "description": "Measured with fio (1M sequential read): 1203 MB/s. Set to 0 to hide the limit line.",
+        "type": "textbox",
+        "query": "1200",
+        "hide": 2,
+        "current": {
+          "text": "1200",
+          "value": "1200"
+        },
+        "options": [
+          {
+            "selected": true,
+            "text": "1200",
+            "value": "1200"
+          }
+        ]
+      },
+      {
+        "name": "max_nic_mbps",
+        "label": "Max NIC bandwidth (Mbps)",
+        "description": "Public bandwidth from the hosting plan: 500 Mbit/s. Set to 0 to hide the limit line.",
+        "type": "textbox",
+        "query": "500",
+        "hide": 2,
+        "current": {
+          "text": "500",
+          "value": "500"
+        },
+        "options": [
+          {
+            "selected": true,
+            "text": "500",
+            "value": "500"
+          }
+        ]
+      }
+    ]
+  },
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "links": [
+    {
+      "type": "link",
+      "title": "Last 1 hour",
+      "url": "/d/perfops-blokus-use?from=now-1h&to=now&var-range=1h",
+      "targetBlank": false,
+      "includeVars": false,
+      "keepTime": false
+    },
+    {
+      "type": "link",
+      "title": "Last 7 days",
+      "url": "/d/perfops-blokus-use?from=now-7d&to=now&var-range=7d",
+      "targetBlank": false,
+      "includeVars": false,
+      "keepTime": false
+    },
+    {
+      "type": "link",
+      "title": "SLI / SLO dashboard",
+      "url": "/d/perfops-blokus-slo",
+      "icon": "dashboard",
+      "targetBlank": false,
+      "includeVars": false,
+      "keepTime": true
+    }
+  ],
+  "panels": [
+    {
+      "type": "row",
+      "id": 1,
+      "title": "CPU",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "panels": []
+    },
+    {
+      "type": "text",
+      "id": 2,
+      "title": "",
+      "gridPos": {
+        "h": 2,
+        "w": 24,
+        "x": 0,
+        "y": 1
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "### ② SATURATION"
+      },
+      "transparent": true
+    },
+    {
+      "type": "text",
+      "id": 3,
+      "title": "",
+      "gridPos": {
+        "h": 3,
+        "w": 24,
+        "x": 0,
+        "y": 3
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "**PSI (/proc/pressure/cpu)**\n\n- Rising: tasks are queuing for CPU. This is real saturation, even if utilization looks moderate.\n- Near zero: no CPU contention, even if utilization is high.\n\n"
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 4,
+      "title": "S · PSI (/proc/pressure/cpu)",
+      "description": "Time tasks spent stalled waiting for CPU",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 6
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "rate(node_pressure_cpu_waiting_seconds_total{instance=~\"$instance\"}[$__rate_interval])*100",
+          "legendFormat": "{{instance}} stalled",
+          "refId": "A",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": true,
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          },
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 5
+              },
+              {
+                "color": "red",
+                "value": 20
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "text",
+      "id": 5,
+      "title": "",
+      "gridPos": {
+        "h": 3,
+        "w": 24,
+        "x": 0,
+        "y": 14
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "### ③ UTILIZATION\n\n*Use the Core view and CPU core buttons at the top: per core, or all cores together.*"
+      },
+      "transparent": true
+    },
+    {
+      "type": "text",
+      "id": 6,
+      "title": "",
+      "gridPos": {
+        "h": 4,
+        "w": 12,
+        "x": 0,
+        "y": 17
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "**%usr (application code)**\n\n- High on all cores: the app is CPU-bound (game logic, move validation, JSON handling). Expect move latency (SLI-3) to rise at the same time.\n- Low: the app is not computing heavily, so the CPU is not the bottleneck.\n\n"
+      }
+    },
+    {
+      "type": "text",
+      "id": 7,
+      "title": "",
+      "gridPos": {
+        "h": 4,
+        "w": 12,
+        "x": 12,
+        "y": 17
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "**%sys (kernel work)**\n\n- High: the kernel is busy handling many syscalls, network packets or context switches, typically many WebSocket connections sending small messages.\n- Low: kernel overhead is not a problem.\n\n"
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 8,
+      "title": "U · %usr per core",
+      "description": "CPU time running application code",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 21
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "label_replace(100*avg by ($core_view)(rate(node_cpu_seconds_total{mode=\"user\",instance=~\"$instance\",cpu=~\"$core\"}[$__rate_interval])), \"cpu\", \"all\", \"cpu\", \"\")",
+          "legendFormat": "{{instance}} cpu {{cpu}}",
+          "refId": "A",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "min": 0,
+          "max": 100
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 9,
+      "title": "U · %sys per core",
+      "description": "CPU time in the kernel (syscalls, networking, disk)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 21
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "label_replace(100*avg by ($core_view)(rate(node_cpu_seconds_total{mode=\"system\",instance=~\"$instance\",cpu=~\"$core\"}[$__rate_interval])), \"cpu\", \"all\", \"cpu\", \"\")",
+          "legendFormat": "{{instance}} cpu {{cpu}}",
+          "refId": "A",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "min": 0,
+          "max": 100
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "text",
+      "id": 10,
+      "title": "",
+      "gridPos": {
+        "h": 4,
+        "w": 12,
+        "x": 0,
+        "y": 30
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "**%iowait (waiting on disk)**\n\n- High: tasks are waiting for storage, so the problem is the disk and not the CPU.\n- Low: storage is not making the CPU wait.\n\n"
+      }
+    },
+    {
+      "type": "text",
+      "id": 11,
+      "title": "",
+      "gridPos": {
+        "h": 4,
+        "w": 12,
+        "x": 12,
+        "y": 30
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "**%steal (hypervisor, VMs only)**\n\n- High: the host is taking CPU time from the VM (noisy neighbour). Nothing inside the VM can fix it, and test results become unreliable.\n- Low: the VM gets the CPU it expects.\n\n"
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 12,
+      "title": "U · %iowait per core",
+      "description": "CPU idle while waiting on disk",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 34
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "label_replace(100*avg by ($core_view)(rate(node_cpu_seconds_total{mode=\"iowait\",instance=~\"$instance\",cpu=~\"$core\"}[$__rate_interval])), \"cpu\", \"all\", \"cpu\", \"\")",
+          "legendFormat": "{{instance}} cpu {{cpu}}",
+          "refId": "A",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "min": 0,
+          "max": 100
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 13,
+      "title": "U · %steal per core",
+      "description": "CPU time taken by the hypervisor (VMs only)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 34
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "label_replace(100*avg by ($core_view)(rate(node_cpu_seconds_total{mode=\"steal\",instance=~\"$instance\",cpu=~\"$core\"}[$__rate_interval])), \"cpu\", \"all\", \"cpu\", \"\")",
+          "legendFormat": "{{instance}} cpu {{cpu}}",
+          "refId": "A",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "min": 0,
+          "max": 100
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "text",
+      "id": 14,
+      "title": "",
+      "gridPos": {
+        "h": 4,
+        "w": 24,
+        "x": 0,
+        "y": 43
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "**Top 10 CPU usage**\n\n- One process dominates: that process is the main CPU consumer and the first suspect.\n- Load spread evenly: no single culprit, so look at overall capacity.\n\n**CPU low but latency high: the bottleneck is not the CPU. Move to memory, disk, network, or the database and locks.**\n"
+      }
+    },
+    {
+      "type": "bargauge",
+      "id": 15,
+      "title": "U · Top 10 CPU usage (processes)",
+      "description": "The processes consuming the most CPU",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 47
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "topk(10, 100*sum by (groupname)(rate(namedprocess_namegroup_cpu_seconds_total{instance=~\"$instance\"}[$range])))",
+          "legendFormat": "{{groupname}}",
+          "refId": "A",
+          "editorMode": "code",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "color": {
+            "mode": "continuous-GrYlRd"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "gradient",
+        "showUnfilled": true,
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "type": "row",
+      "id": 16,
+      "title": "MEMORY",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 57
+      },
+      "panels": []
+    },
+    {
+      "type": "text",
+      "id": 17,
+      "title": "",
+      "gridPos": {
+        "h": 2,
+        "w": 24,
+        "x": 0,
+        "y": 58
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "### ① ERRORS"
+      },
+      "transparent": true
+    },
+    {
+      "type": "text",
+      "id": 18,
+      "title": "",
+      "gridPos": {
+        "h": 3,
+        "w": 24,
+        "x": 0,
+        "y": 60
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "**dmesg | grep -i killed**\n\n- Any entry: the OOM killer terminated a process. This is a hard failure, and a sudden drop in SLI-1 or SLI-5 at the same time confirms it.\n- Empty: no process was killed for memory.\n\n"
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 19,
+      "title": "E · OOM kills (dmesg | grep -i killed)",
+      "description": "The kernel killed a process because RAM ran out (OOM killer)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 63
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "increase(node_vmstat_oom_kill{instance=~\"$instance\"}[$__rate_interval])",
+          "legendFormat": "{{instance}} oom kills",
+          "refId": "A",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 15,
+            "showPoints": "never",
+            "spanNulls": true,
+            "drawStyle": "bars",
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          },
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "text",
+      "id": 20,
+      "title": "",
+      "gridPos": {
+        "h": 2,
+        "w": 24,
+        "x": 0,
+        "y": 71
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "### ② SATURATION"
+      },
+      "transparent": true
+    },
+    {
+      "type": "text",
+      "id": 21,
+      "title": "",
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 73
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "**so (pages written to disk)**\n\n- Sustained above 0: the kernel is under memory pressure and latency will rise with it.\n- 0: no memory pressure.\n\n**si (pages read from disk)**\n\n- Sustained above 0: processes are already being delayed because their memory sits on disk.\n- 0: processes are not waiting on swapped memory.\n\n"
+      }
+    },
+    {
+      "type": "text",
+      "id": 22,
+      "title": "",
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 73
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "**majflt/s**\n\n- High: active data is not in RAM, so every access is slow, which indicates a memory shortage.\n- Low: the working set fits in RAM.\n\n"
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 23,
+      "title": "S · si / so",
+      "description": "Pages moved from / to disk per second",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 80
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "rate(node_vmstat_pswpin{instance=~\"$instance\"}[$__rate_interval])",
+          "legendFormat": "{{instance}} si (read from disk)",
+          "refId": "A",
+          "editorMode": "code"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "rate(node_vmstat_pswpout{instance=~\"$instance\"}[$__rate_interval])",
+          "legendFormat": "{{instance}} so (written to disk)",
+          "refId": "B",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix: pages/s",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 24,
+      "title": "S · majflt/s",
+      "description": "Pages that had to be read from disk",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 80
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "rate(node_vmstat_pgmajfault{instance=~\"$instance\"}[$__rate_interval])",
+          "legendFormat": "{{instance}} majflt/s",
+          "refId": "A",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix: /s",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "text",
+      "id": 25,
+      "title": "",
+      "gridPos": {
+        "h": 2,
+        "w": 24,
+        "x": 0,
+        "y": 89
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "### ③ UTILIZATION"
+      },
+      "transparent": true
+    },
+    {
+      "type": "text",
+      "id": 26,
+      "title": "",
+      "gridPos": {
+        "h": 5,
+        "w": 12,
+        "x": 0,
+        "y": 91
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "**available**\n\n- Shrinking steadily during a long test: likely a memory leak (for example game rooms or WebSocket objects never released).\n- Low free but high available: normal. Linux uses spare RAM as cache, so free always looks low and should not trigger an alert.\n- High and stable: memory is not the bottleneck.\n\n"
+      }
+    },
+    {
+      "type": "text",
+      "id": 27,
+      "title": "",
+      "gridPos": {
+        "h": 5,
+        "w": 12,
+        "x": 12,
+        "y": 91
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "**Swap used**\n\n- Rising: the system ran out of RAM and is pushing memory to disk.\n- Zero: no memory pressure so far.\n\n**Swap at 0 and available high: memory is not the bottleneck.**\n"
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 28,
+      "title": "U · available (free -m)",
+      "description": "RAM that apps can still use without swapping",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 96
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "node_memory_MemAvailable_bytes{instance=~\"$instance\"}",
+          "legendFormat": "{{instance}} available",
+          "refId": "A",
+          "editorMode": "code"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "node_memory_MemTotal_bytes{instance=~\"$instance\"}",
+          "legendFormat": "{{instance}} total",
+          "refId": "B",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 29,
+      "title": "U · Swap used (free -m)",
+      "description": "Disk being used as extra memory",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 96
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "node_memory_SwapTotal_bytes{instance=~\"$instance\"} - node_memory_SwapFree_bytes{instance=~\"$instance\"}",
+          "legendFormat": "{{instance}} swap used",
+          "refId": "A",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "text",
+      "id": 30,
+      "title": "",
+      "gridPos": {
+        "h": 3,
+        "w": 24,
+        "x": 0,
+        "y": 105
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "**Top 10 RAM usage**\n\n- One process keeps growing: that process is the likely leak.\n- Memory returns after players leave: the usage is normal load, not a leak.\n\n"
+      }
+    },
+    {
+      "type": "bargauge",
+      "id": 31,
+      "title": "U · Top 10 RAM usage (processes)",
+      "description": "The processes consuming the most memory",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 108
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "topk(10, avg by (groupname)(avg_over_time(namedprocess_namegroup_memory_bytes{memtype=\"resident\",instance=~\"$instance\"}[$range])))",
+          "legendFormat": "{{groupname}}",
+          "refId": "A",
+          "editorMode": "code",
+          "instant": true,
+          "range": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "min": 0,
+          "color": {
+            "mode": "continuous-GrYlRd"
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "orientation": "horizontal",
+        "displayMode": "gradient",
+        "showUnfilled": true,
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      }
+    },
+    {
+      "type": "row",
+      "id": 32,
+      "title": "NETWORK",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 118
+      },
+      "panels": []
+    },
+    {
+      "type": "text",
+      "id": 33,
+      "title": "",
+      "gridPos": {
+        "h": 2,
+        "w": 24,
+        "x": 0,
+        "y": 119
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "### ① ERRORS"
+      },
+      "transparent": true
+    },
+    {
+      "type": "text",
+      "id": 34,
+      "title": "",
+      "gridPos": {
+        "h": 3,
+        "w": 24,
+        "x": 0,
+        "y": 121
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "**rx / tx errors (added)**\n\n- Above 0: packets are failing on the interface.\n- 0: no errors on the network interface.\n\n"
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 35,
+      "title": "E · rx / tx errors per second",
+      "description": "Packets that failed on the interface",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 124
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (instance)(rate(node_network_receive_errs_total{instance=~\"$instance\",device=~\"$nic\"}[$__rate_interval]))",
+          "legendFormat": "{{instance}} rx errors",
+          "refId": "A",
+          "editorMode": "code"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (instance)(rate(node_network_transmit_errs_total{instance=~\"$instance\",device=~\"$nic\"}[$__rate_interval]))",
+          "legendFormat": "{{instance}} tx errors",
+          "refId": "B",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix: /s",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 15,
+            "showPoints": "never",
+            "spanNulls": true,
+            "drawStyle": "bars",
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          },
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "text",
+      "id": 36,
+      "title": "",
+      "gridPos": {
+        "h": 2,
+        "w": 24,
+        "x": 0,
+        "y": 132
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "### ② SATURATION"
+      },
+      "transparent": true
+    },
+    {
+      "type": "text",
+      "id": 37,
+      "title": "",
+      "gridPos": {
+        "h": 5,
+        "w": 12,
+        "x": 0,
+        "y": 134
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "**rxdrop/s, txdrop/s**\n\n- Above 0: buffers are full and the host cannot process packets fast enough. High %sys at the same time supports this.\n- 0: the interface and kernel are keeping up.\n\n"
+      }
+    },
+    {
+      "type": "text",
+      "id": 38,
+      "title": "",
+      "gridPos": {
+        "h": 5,
+        "w": 12,
+        "x": 12,
+        "y": 134
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "**TcpRetransSegs**\n\n- Rising: packet loss or congestion between client and server. Players on bad networks will show high latency (SLI-3) and disconnects (SLI-5).\n- Rising only as the number of players rises: a network limit or connection pressure under load.\n- Flat: the network path is healthy.\n\n"
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 39,
+      "title": "S · rxdrop/s, txdrop/s",
+      "description": "Packets discarded because buffers were full",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 139
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (instance)(rate(node_network_receive_drop_total{instance=~\"$instance\",device=~\"$nic\"}[$__rate_interval]))",
+          "legendFormat": "{{instance}} rxdrop/s",
+          "refId": "A",
+          "editorMode": "code"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (instance)(rate(node_network_transmit_drop_total{instance=~\"$instance\",device=~\"$nic\"}[$__rate_interval]))",
+          "legendFormat": "{{instance}} txdrop/s",
+          "refId": "B",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix: /s",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 40,
+      "title": "S · TcpRetransSegs (nstat)",
+      "description": "TCP segments resent after loss",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 139
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "rate(node_netstat_Tcp_RetransSegs{instance=~\"$instance\"}[$__rate_interval])",
+          "legendFormat": "{{instance}} retrans/s",
+          "refId": "A",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix: /s",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "text",
+      "id": 41,
+      "title": "",
+      "gridPos": {
+        "h": 2,
+        "w": 24,
+        "x": 0,
+        "y": 148
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "### ③ UTILIZATION"
+      },
+      "transparent": true
+    },
+    {
+      "type": "text",
+      "id": 42,
+      "title": "",
+      "gridPos": {
+        "h": 3,
+        "w": 24,
+        "x": 0,
+        "y": 150
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "**rx / tx throughput (added)**\n\n- Close to the bandwidth limit (red dashed line): the NIC or instance bandwidth cap is reached.\n- Far below the limit: bandwidth is not the constraint.\n\n"
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 43,
+      "title": "U · rx / tx throughput vs Max NIC bandwidth",
+      "description": "Data received and sent per second",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 153
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (instance)(rate(node_network_receive_bytes_total{instance=~\"$instance\",device=~\"$nic\"}[$__rate_interval]))*8",
+          "legendFormat": "{{instance}} rx",
+          "refId": "A",
+          "editorMode": "code"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (instance)(rate(node_network_transmit_bytes_total{instance=~\"$instance\",device=~\"$nic\"}[$__rate_interval]))*8",
+          "legendFormat": "{{instance}} tx",
+          "refId": "B",
+          "editorMode": "code"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "vector($max_nic_mbps * 1000000) > 0",
+          "legendFormat": "Max NIC bandwidth",
+          "refId": "C",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bps",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "Max.*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    10,
+                    10
+                  ]
+                }
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "row",
+      "id": 44,
+      "title": "STORAGE I/O (disk performance)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 162
+      },
+      "panels": []
+    },
+    {
+      "type": "text",
+      "id": 45,
+      "title": "",
+      "gridPos": {
+        "h": 2,
+        "w": 24,
+        "x": 0,
+        "y": 163
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "### ② SATURATION"
+      },
+      "transparent": true
+    },
+    {
+      "type": "text",
+      "id": 46,
+      "title": "",
+      "gridPos": {
+        "h": 3,
+        "w": 12,
+        "x": 0,
+        "y": 165
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "**await (added)**\n\n- High: requests are waiting on the disk, so latency rises.\n- Low: the disk answers quickly, even if %util looks high.\n\n"
+      }
+    },
+    {
+      "type": "text",
+      "id": 47,
+      "title": "",
+      "gridPos": {
+        "h": 3,
+        "w": 12,
+        "x": 12,
+        "y": 165
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "**Queue depth (aqu-sz) (added)**\n\n- Above 1 on a single disk: requests are queueing.\n- Near 0: no queue.\n\n"
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 48,
+      "title": "S · await",
+      "description": "Average time a request waits and is served",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 168
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "(rate(node_disk_read_time_seconds_total{instance=~\"$instance\",device=~\"$device\"}[$__rate_interval]) + rate(node_disk_write_time_seconds_total{instance=~\"$instance\",device=~\"$device\"}[$__rate_interval])) / clamp_min(rate(node_disk_reads_completed_total{instance=~\"$instance\",device=~\"$device\"}[$__rate_interval]) + rate(node_disk_writes_completed_total{instance=~\"$instance\",device=~\"$device\"}[$__rate_interval]), 1)",
+          "legendFormat": "{{instance}} {{device}}",
+          "refId": "A",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 49,
+      "title": "S · Queue depth (aqu-sz)",
+      "description": "Requests waiting on the disk",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 168
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "rate(node_disk_io_time_weighted_seconds_total{instance=~\"$instance\",device=~\"$device\"}[$__rate_interval])",
+          "legendFormat": "{{instance}} {{device}}",
+          "refId": "A",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": true,
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          },
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 4
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "text",
+      "id": 50,
+      "title": "",
+      "gridPos": {
+        "h": 2,
+        "w": 24,
+        "x": 0,
+        "y": 177
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "### ③ UTILIZATION"
+      },
+      "transparent": true
+    },
+    {
+      "type": "text",
+      "id": 51,
+      "title": "",
+      "gridPos": {
+        "h": 4,
+        "w": 24,
+        "x": 0,
+        "y": 179
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "**%util**\n\n- Near 100% on an HDD: the disk is saturated.\n- Near 100% on SSD/NVMe: not necessarily a problem, because these disks handle requests in parallel. Judge by request latency (await) instead.\n- Low: the disk is not busy.\n\n"
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 52,
+      "title": "U · %util",
+      "description": "% of time the disk had at least one request in progress",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 183
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "rate(node_disk_io_time_seconds_total{instance=~\"$instance\",device=~\"$device\"}[$__rate_interval])*100",
+          "legendFormat": "{{instance}} {{device}}",
+          "refId": "A",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "min": 0,
+          "max": 100
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "text",
+      "id": 53,
+      "title": "",
+      "gridPos": {
+        "h": 4,
+        "w": 12,
+        "x": 0,
+        "y": 191
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "**r/s, w/s**\n\n- Close to the volume's IOPS limit (red dashed line): the IOPS cap is reached, typical on cloud volumes.\n- Far below the limit: IOPS are not the constraint.\n\n"
+      }
+    },
+    {
+      "type": "text",
+      "id": 54,
+      "title": "",
+      "gridPos": {
+        "h": 4,
+        "w": 12,
+        "x": 12,
+        "y": 191
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "**rkB/s, wkB/s**\n\n- Close to the bandwidth limit (red dashed line) while IOPS is low: large transfers hit the throughput cap.\n- Far below the limit: throughput is not the constraint.\n\n"
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 55,
+      "title": "U · r/s, w/s vs Max IOPS",
+      "description": "Reads and writes completed per second",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 0,
+        "y": 195
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "rate(node_disk_reads_completed_total{instance=~\"$instance\",device=~\"$device\"}[$__rate_interval])",
+          "legendFormat": "{{instance}} {{device}} r/s",
+          "refId": "A",
+          "editorMode": "code"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "rate(node_disk_writes_completed_total{instance=~\"$instance\",device=~\"$device\"}[$__rate_interval])",
+          "legendFormat": "{{instance}} {{device}} w/s",
+          "refId": "B",
+          "editorMode": "code"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (instance, device)(rate(node_disk_reads_completed_total{instance=~\"$instance\",device=~\"$device\"}[$__rate_interval]) + rate(node_disk_writes_completed_total{instance=~\"$instance\",device=~\"$device\"}[$__rate_interval]))",
+          "legendFormat": "{{instance}} {{device}} total (r/s + w/s)",
+          "refId": "C",
+          "editorMode": "code"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "vector($max_iops) > 0",
+          "legendFormat": "Max IOPS",
+          "refId": "D",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "iops",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "Max.*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    10,
+                    10
+                  ]
+                }
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 56,
+      "title": "U · rkB/s, wkB/s vs Max disk bandwidth",
+      "description": "Data read and written per second (throughput)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 12,
+        "y": 195
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "rate(node_disk_read_bytes_total{instance=~\"$instance\",device=~\"$device\"}[$__rate_interval])",
+          "legendFormat": "{{instance}} {{device}} read",
+          "refId": "A",
+          "editorMode": "code"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "rate(node_disk_written_bytes_total{instance=~\"$instance\",device=~\"$device\"}[$__rate_interval])",
+          "legendFormat": "{{instance}} {{device}} write",
+          "refId": "B",
+          "editorMode": "code"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (instance, device)(rate(node_disk_read_bytes_total{instance=~\"$instance\",device=~\"$device\"}[$__rate_interval]) + rate(node_disk_written_bytes_total{instance=~\"$instance\",device=~\"$device\"}[$__rate_interval]))",
+          "legendFormat": "{{instance}} {{device}} total (read + write)",
+          "refId": "C",
+          "editorMode": "code"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "vector($max_disk_bw_mbps * 1000000) > 0",
+          "legendFormat": "Max disk bandwidth",
+          "refId": "D",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "Bps",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "Max.*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    10,
+                    10
+                  ]
+                }
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "text",
+      "id": 57,
+      "title": "",
+      "gridPos": {
+        "h": 3,
+        "w": 24,
+        "x": 0,
+        "y": 205
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "**Combined reading**\n\n- %iowait high and %util high: storage is the bottleneck.\n- %iowait high but %util low: the wait is probably on network storage or another device.\n\n"
+      }
+    },
+    {
+      "type": "row",
+      "id": 58,
+      "title": "STORAGE CAPACITY (disk space)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 208
+      },
+      "panels": []
+    },
+    {
+      "type": "text",
+      "id": 59,
+      "title": "",
+      "gridPos": {
+        "h": 2,
+        "w": 24,
+        "x": 0,
+        "y": 209
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "### ① ERRORS"
+      },
+      "transparent": true
+    },
+    {
+      "type": "text",
+      "id": 60,
+      "title": "",
+      "gridPos": {
+        "h": 3,
+        "w": 24,
+        "x": 0,
+        "y": 211
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "**Filesystem device errors (added)**\n\n- Any value: the filesystem reports a device error, so writes may fail.\n- 0: no device errors.\n\n"
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 61,
+      "title": "E · Filesystem device errors",
+      "description": "The filesystem reports a device error",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 7,
+        "w": 24,
+        "x": 0,
+        "y": 214
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "node_filesystem_device_error{instance=~\"$instance\",fstype!~\"tmpfs|overlay|squashfs|ramfs|devtmpfs\",mountpoint!~\"/(sys|proc|dev|run)(/.*)?\"}",
+          "legendFormat": "{{instance}} {{mountpoint}}",
+          "refId": "A",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 15,
+            "showPoints": "never",
+            "spanNulls": true,
+            "drawStyle": "bars",
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          },
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "text",
+      "id": 62,
+      "title": "",
+      "gridPos": {
+        "h": 2,
+        "w": 24,
+        "x": 0,
+        "y": 221
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "### ② SATURATION"
+      },
+      "transparent": true
+    },
+    {
+      "type": "text",
+      "id": 63,
+      "title": "",
+      "gridPos": {
+        "h": 3,
+        "w": 24,
+        "x": 0,
+        "y": 223
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "**Hours until full (added)**\n\n- Under ~24 h: the partition will fill soon at the current rate.\n- Rising or stable: no growth problem.\n\n"
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 64,
+      "title": "S · Hours until full (6 h trend)",
+      "description": "Estimated time before the partition is full at the current rate",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 226
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "(node_filesystem_avail_bytes{instance=~\"$instance\",fstype!~\"tmpfs|overlay|squashfs|ramfs|devtmpfs\",mountpoint!~\"/(sys|proc|dev|run)(/.*)?\"} / -deriv(node_filesystem_avail_bytes{instance=~\"$instance\",fstype!~\"tmpfs|overlay|squashfs|ramfs|devtmpfs\",mountpoint!~\"/(sys|proc|dev|run)(/.*)?\"}[6h])) / 3600 and deriv(node_filesystem_avail_bytes{instance=~\"$instance\",fstype!~\"tmpfs|overlay|squashfs|ramfs|devtmpfs\",mountpoint!~\"/(sys|proc|dev|run)(/.*)?\"}[6h]) < 0",
+          "legendFormat": "{{instance}} {{mountpoint}}",
+          "refId": "A",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "h",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": true,
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          },
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 24
+              },
+              {
+                "color": "green",
+                "value": 72
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "text",
+      "id": 65,
+      "title": "",
+      "gridPos": {
+        "h": 2,
+        "w": 24,
+        "x": 0,
+        "y": 234
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "### ③ UTILIZATION"
+      },
+      "transparent": true
+    },
+    {
+      "type": "text",
+      "id": 66,
+      "title": "",
+      "gridPos": {
+        "h": 4,
+        "w": 12,
+        "x": 0,
+        "y": 236
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "**Use% (df -h)**\n\n- Above ~90%: the disk will fill soon. Writes will fail and the app or database can crash.\n- Growing fast during the test: excessive logging or data generation under load.\n\n"
+      }
+    },
+    {
+      "type": "text",
+      "id": 67,
+      "title": "",
+      "gridPos": {
+        "h": 4,
+        "w": 12,
+        "x": 12,
+        "y": 236
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "**Inodes (df -i)**\n\n- Near 100% while Use% is low: too many small files (logs, temp files, sessions).\n\n"
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 68,
+      "title": "U · Use% (df -h) per partition",
+      "description": "% of space used",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 240
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "100 * (1 - node_filesystem_avail_bytes{instance=~\"$instance\",fstype!~\"tmpfs|overlay|squashfs|ramfs|devtmpfs\",mountpoint!~\"/(sys|proc|dev|run)(/.*)?\"} / node_filesystem_size_bytes{instance=~\"$instance\",fstype!~\"tmpfs|overlay|squashfs|ramfs|devtmpfs\",mountpoint!~\"/(sys|proc|dev|run)(/.*)?\"})",
+          "legendFormat": "{{instance}} {{mountpoint}}",
+          "refId": "A",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": true,
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          },
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 80
+              },
+              {
+                "color": "red",
+                "value": 90
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 69,
+      "title": "U · Inodes (df -i) used per partition",
+      "description": "File slots left (shown as % used)",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 240
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "100 * (1 - node_filesystem_files_free{instance=~\"$instance\",fstype!~\"tmpfs|overlay|squashfs|ramfs|devtmpfs\",mountpoint!~\"/(sys|proc|dev|run)(/.*)?\"} / node_filesystem_files{instance=~\"$instance\",fstype!~\"tmpfs|overlay|squashfs|ramfs|devtmpfs\",mountpoint!~\"/(sys|proc|dev|run)(/.*)?\"})",
+          "legendFormat": "{{instance}} {{mountpoint}}",
+          "refId": "A",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": true,
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          },
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 80
+              },
+              {
+                "color": "red",
+                "value": 90
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    }
+  ]
+}

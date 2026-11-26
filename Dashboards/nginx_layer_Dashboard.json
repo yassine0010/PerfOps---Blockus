@@ -1,0 +1,1144 @@
+{
+  "uid": "perfops-blokus-proxy",
+  "title": "PerfOps Blokus — Proxy Layer (Nginx)",
+  "description": "Nginx connections (stub_status), access log requests and latency, and error log patterns (Loki).",
+  "tags": [
+    "blokus",
+    "proxy",
+    "nginx",
+    "perfops"
+  ],
+  "timezone": "browser",
+  "editable": true,
+  "graphTooltip": 1,
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {
+    "from": "now-1h",
+    "to": "now"
+  },
+  "timepicker": {
+    "refresh_intervals": [
+      "10s",
+      "30s",
+      "1m",
+      "5m"
+    ]
+  },
+  "templating": {
+    "list": [
+      {
+        "name": "datasource",
+        "label": "Prometheus",
+        "type": "datasource",
+        "query": "prometheus",
+        "current": {},
+        "hide": 0
+      },
+      {
+        "name": "loki",
+        "label": "Loki",
+        "type": "datasource",
+        "query": "loki",
+        "current": {},
+        "hide": 0
+      },
+      {
+        "name": "instance",
+        "label": "Nginx exporter",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "query": {
+          "query": "label_values(nginx_up, instance)",
+          "refId": "instance"
+        },
+        "definition": "label_values(nginx_up, instance)",
+        "refresh": 2,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "sort": 1,
+        "hide": 2
+      },
+      {
+        "name": "max_worker_connections",
+        "label": "worker_connections limit",
+        "description": "worker_processes x worker_connections from nginx.conf. Set to 0 to hide the limit line.",
+        "type": "textbox",
+        "query": "1024",
+        "hide": 2,
+        "current": {
+          "text": "1024",
+          "value": "1024"
+        },
+        "options": [
+          {
+            "selected": true,
+            "text": "1024",
+            "value": "1024"
+          }
+        ]
+      }
+    ]
+  },
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "links": [
+    {
+      "type": "link",
+      "title": "OS dashboard (USE)",
+      "url": "/d/perfops-blokus-use",
+      "icon": "dashboard",
+      "targetBlank": false,
+      "includeVars": false,
+      "keepTime": true
+    },
+    {
+      "type": "link",
+      "title": "Application dashboard",
+      "url": "/d/perfops-blokus-app",
+      "icon": "dashboard",
+      "targetBlank": false,
+      "includeVars": false,
+      "keepTime": true
+    },
+    {
+      "type": "link",
+      "title": "SLI / SLO dashboard",
+      "url": "/d/perfops-blokus-slo",
+      "icon": "dashboard",
+      "targetBlank": false,
+      "includeVars": false,
+      "keepTime": true
+    }
+  ],
+  "panels": [
+    {
+      "type": "row",
+      "id": 1,
+      "title": "NGINX CONNECTIONS (stub_status)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      },
+      "panels": []
+    },
+    {
+      "type": "text",
+      "id": 2,
+      "title": "",
+      "gridPos": {
+        "h": 2,
+        "w": 24,
+        "x": 0,
+        "y": 1
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "### Connection limits"
+      },
+      "transparent": true
+    },
+    {
+      "type": "text",
+      "id": 3,
+      "title": "",
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 3
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "**Active connections vs worker_connections**\n\n- Close to the limit (red dashed line): Nginx itself is about to become the bottleneck. Every WebSocket keeps a connection open, so compare with the Node.js connections line.\n- Far below the limit: connection capacity is not a constraint.\n\n*Each proxied connection uses two slots (client and upstream), so the limit line is worker_connections ÷ 2.*\n\n"
+      }
+    },
+    {
+      "type": "text",
+      "id": 4,
+      "title": "",
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 3
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "**Dropped connections**\n\n- Above 0: Nginx accepted a connection but could not handle it, which means worker_connections or the descriptor limit was reached. Confirm in the error log section.\n- 0: every accepted connection was handled.\n\n"
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 5,
+      "title": "Active connections vs limit",
+      "description": "Client connections held by Nginx, compared with Node.js WebSocket connections",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 10
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "nginx_connections_active{instance=~\"$instance\"}",
+          "legendFormat": "{{instance}} nginx active",
+          "refId": "A",
+          "editorMode": "code"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum(blokus_active_ws_connections)",
+          "legendFormat": "Node.js WebSocket connections",
+          "refId": "B",
+          "editorMode": "code"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "vector($max_worker_connections / 2) > 0",
+          "legendFormat": "Max client connections (worker_connections ÷ 2)",
+          "refId": "C",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "Max.*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    10,
+                    10
+                  ]
+                }
+              },
+              {
+                "id": "custom.fillOpacity",
+                "value": 0
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 6,
+      "title": "Dropped connections per second",
+      "description": "Accepted minus handled connections",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 10
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "rate(nginx_connections_accepted{instance=~\"$instance\"}[$__rate_interval]) - rate(nginx_connections_handled{instance=~\"$instance\"}[$__rate_interval])",
+          "legendFormat": "{{instance}} dropped/s",
+          "refId": "A",
+          "editorMode": "code"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix: /s",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 15,
+            "showPoints": "never",
+            "spanNulls": true,
+            "drawStyle": "bars",
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          },
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "red",
+                "value": 0.01
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "row",
+      "id": 7,
+      "title": "REQUESTS (access log, Loki)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 19
+      },
+      "panels": []
+    },
+    {
+      "type": "text",
+      "id": 8,
+      "title": "",
+      "gridPos": {
+        "h": 2,
+        "w": 24,
+        "x": 0,
+        "y": 20
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "### Status classes"
+      },
+      "transparent": true
+    },
+    {
+      "type": "text",
+      "id": 9,
+      "title": "",
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 0,
+        "y": 22
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "**Request rate by status class**\n\n- 5xx rising: a backend or proxy failure. Check the error log: 502 means the backend is down, 504 means it is too slow.\n- 4xx rising: mostly client mistakes (wrong codes, bad passwords), which are excluded from the SLIs. A sudden jump can mean a client bug or a scan.\n- Only 2xx: the server side is healthy.\n\n"
+      }
+    },
+    {
+      "type": "text",
+      "id": 10,
+      "title": "",
+      "gridPos": {
+        "h": 7,
+        "w": 12,
+        "x": 12,
+        "y": 22
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "**5xx by status code**\n\n- 502: the backend is down or refusing connections.\n- 504: the backend is too slow (upstream timed out).\n- 503: rate limiting or no live upstreams.\n- Nothing: no server-side failures.\n\n"
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 11,
+      "title": "Requests per second by status class",
+      "description": "Server-side throughput and errors (WebSocket upgrades, status 101, are not counted)",
+      "datasource": {
+        "type": "loki",
+        "uid": "${loki}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 29
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "${loki}"
+          },
+          "expr": "sum(rate({job=\"nginx\", log_type=\"access\"} | json | status =~ \"2..\" [$__auto]))",
+          "legendFormat": "2xx",
+          "refId": "A",
+          "editorMode": "code",
+          "queryType": "range"
+        },
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "${loki}"
+          },
+          "expr": "sum(rate({job=\"nginx\", log_type=\"access\"} | json | status =~ \"3..\" [$__auto]))",
+          "legendFormat": "3xx",
+          "refId": "B",
+          "editorMode": "code",
+          "queryType": "range"
+        },
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "${loki}"
+          },
+          "expr": "sum(rate({job=\"nginx\", log_type=\"access\"} | json | status =~ \"4..\" [$__auto]))",
+          "legendFormat": "4xx",
+          "refId": "C",
+          "editorMode": "code",
+          "queryType": "range"
+        },
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "${loki}"
+          },
+          "expr": "sum(rate({job=\"nginx\", log_type=\"access\"} | json | status =~ \"5..\" [$__auto]))",
+          "legendFormat": "5xx",
+          "refId": "D",
+          "editorMode": "code",
+          "queryType": "range"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "2xx"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "3xx"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "blue"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "4xx"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "yellow"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "5xx"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 12,
+      "title": "5xx per second by status code",
+      "description": "Which server errors are happening",
+      "datasource": {
+        "type": "loki",
+        "uid": "${loki}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 29
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "${loki}"
+          },
+          "expr": "sum by (status)(rate({job=\"nginx\", log_type=\"access\"} | json | status =~ \"5..\" [$__auto]))",
+          "legendFormat": "{{status}}",
+          "refId": "A",
+          "editorMode": "code",
+          "queryType": "range"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "text",
+      "id": 13,
+      "title": "",
+      "gridPos": {
+        "h": 2,
+        "w": 24,
+        "x": 0,
+        "y": 38
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "### Latency: Nginx vs backend"
+      },
+      "transparent": true
+    },
+    {
+      "type": "text",
+      "id": 14,
+      "title": "",
+      "gridPos": {
+        "h": 6,
+        "w": 24,
+        "x": 0,
+        "y": 40
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "**$request_time vs $upstream_response_time**\n\n- Both high and close together: the backend is the cause. Go to the application layer (event loop lag, GC).\n- $request_time high but $upstream_response_time low: the delay is in Nginx or the network (slow clients, queueing), not in the backend.\n- Both low but client latency high: the delay is outside the server (player network, browser), which is where RUM data helps.\n\n*WebSocket upgrades (status 101) are excluded, because their $request_time is the whole session length.*\n\n"
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 15,
+      "title": "$request_time p50 / p95 / p99",
+      "description": "Total time spent in Nginx per request",
+      "datasource": {
+        "type": "loki",
+        "uid": "${loki}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 46
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "${loki}"
+          },
+          "expr": "quantile_over_time(0.5, {job=\"nginx\", log_type=\"access\"} | json | status != \"101\" | unwrap request_time | __error__=\"\" [$__auto]) by (job)",
+          "legendFormat": "p50",
+          "refId": "A",
+          "editorMode": "code",
+          "queryType": "range"
+        },
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "${loki}"
+          },
+          "expr": "quantile_over_time(0.95, {job=\"nginx\", log_type=\"access\"} | json | status != \"101\" | unwrap request_time | __error__=\"\" [$__auto]) by (job)",
+          "legendFormat": "p95",
+          "refId": "B",
+          "editorMode": "code",
+          "queryType": "range"
+        },
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "${loki}"
+          },
+          "expr": "quantile_over_time(0.99, {job=\"nginx\", log_type=\"access\"} | json | status != \"101\" | unwrap request_time | __error__=\"\" [$__auto]) by (job)",
+          "legendFormat": "p99",
+          "refId": "C",
+          "editorMode": "code",
+          "queryType": "range"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 16,
+      "title": "$upstream_response_time p50 / p95 / p99",
+      "description": "Time spent in the backend per request",
+      "datasource": {
+        "type": "loki",
+        "uid": "${loki}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 12,
+        "y": 46
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "${loki}"
+          },
+          "expr": "quantile_over_time(0.5, {job=\"nginx\", log_type=\"access\"} | json | status != \"101\" | unwrap upstream_response_time | __error__=\"\" [$__auto]) by (job)",
+          "legendFormat": "p50",
+          "refId": "A",
+          "editorMode": "code",
+          "queryType": "range"
+        },
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "${loki}"
+          },
+          "expr": "quantile_over_time(0.95, {job=\"nginx\", log_type=\"access\"} | json | status != \"101\" | unwrap upstream_response_time | __error__=\"\" [$__auto]) by (job)",
+          "legendFormat": "p95",
+          "refId": "B",
+          "editorMode": "code",
+          "queryType": "range"
+        },
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "${loki}"
+          },
+          "expr": "quantile_over_time(0.99, {job=\"nginx\", log_type=\"access\"} | json | status != \"101\" | unwrap upstream_response_time | __error__=\"\" [$__auto]) by (job)",
+          "legendFormat": "p99",
+          "refId": "C",
+          "editorMode": "code",
+          "queryType": "range"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 17,
+      "title": "p95: Nginx vs backend",
+      "description": "If the two lines are close, the backend is the cause",
+      "datasource": {
+        "type": "loki",
+        "uid": "${loki}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 55
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "${loki}"
+          },
+          "expr": "quantile_over_time(0.95, {job=\"nginx\", log_type=\"access\"} | json | status != \"101\" | unwrap request_time | __error__=\"\" [$__auto]) by (job)",
+          "legendFormat": "$request_time p95",
+          "refId": "A",
+          "editorMode": "code",
+          "queryType": "range"
+        },
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "${loki}"
+          },
+          "expr": "quantile_over_time(0.95, {job=\"nginx\", log_type=\"access\"} | json | status != \"101\" | unwrap upstream_response_time | __error__=\"\" [$__auto]) by (job)",
+          "legendFormat": "$upstream_response_time p95",
+          "refId": "B",
+          "editorMode": "code",
+          "queryType": "range"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "text",
+      "id": 18,
+      "title": "",
+      "gridPos": {
+        "h": 2,
+        "w": 24,
+        "x": 0,
+        "y": 64
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "### Backend distribution"
+      },
+      "transparent": true
+    },
+    {
+      "type": "text",
+      "id": 19,
+      "title": "",
+      "gridPos": {
+        "h": 4,
+        "w": 24,
+        "x": 0,
+        "y": 66
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "**$upstream_addr**\n\n- Uneven distribution: a load balancing problem (weights, sticky sessions, one instance slower).\n- Even distribution: balancing is healthy.\n\n"
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 20,
+      "title": "Requests per second by backend",
+      "description": "Which Node.js instance served the requests",
+      "datasource": {
+        "type": "loki",
+        "uid": "${loki}"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 70
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "${loki}"
+          },
+          "expr": "sum by (upstream_addr)(rate({job=\"nginx\", log_type=\"access\"} | json | upstream_addr != \"\" | upstream_addr != \"-\" | status != \"101\" [$__auto]))",
+          "legendFormat": "{{upstream_addr}}",
+          "refId": "A",
+          "editorMode": "code",
+          "queryType": "range"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 8,
+            "showPoints": "never",
+            "spanNulls": true
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "row",
+      "id": 21,
+      "title": "ERROR LOG (Loki)",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 78
+      },
+      "panels": []
+    },
+    {
+      "type": "text",
+      "id": 22,
+      "title": "",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 79
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "**Error log patterns**\n\n- worker_connections are not enough or too many open files: Nginx itself is the bottleneck. Raise worker_connections or the descriptor limits, and relate it to the Node.js WebSocket connections.\n- upstream timed out or connection refused: the problem is in the backend, not Nginx.\n- no live upstreams: every instance failed its health checks, which is a full outage (SLI-1 collapses).\n- limiting requests: rate limiting is working. A large count can mean an attack or an overly strict limit.\n- Nothing: no limit or failure was hit.\n\n"
+      }
+    },
+    {
+      "type": "timeseries",
+      "id": 23,
+      "title": "Error log events by pattern",
+      "description": "Number of matching error log lines per interval",
+      "datasource": {
+        "type": "loki",
+        "uid": "${loki}"
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 87
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "${loki}"
+          },
+          "expr": "sum(count_over_time({job=\"nginx\", log_type=\"error\"} |= \"worker_connections are not enough\" [$__auto]))",
+          "legendFormat": "worker_connections not enough",
+          "refId": "A",
+          "editorMode": "code",
+          "queryType": "range"
+        },
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "${loki}"
+          },
+          "expr": "sum(count_over_time({job=\"nginx\", log_type=\"error\"} |= \"too many open files\" [$__auto]))",
+          "legendFormat": "too many open files",
+          "refId": "B",
+          "editorMode": "code",
+          "queryType": "range"
+        },
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "${loki}"
+          },
+          "expr": "sum(count_over_time({job=\"nginx\", log_type=\"error\"} |= \"upstream timed out\" [$__auto]))",
+          "legendFormat": "upstream timed out (504)",
+          "refId": "C",
+          "editorMode": "code",
+          "queryType": "range"
+        },
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "${loki}"
+          },
+          "expr": "sum(count_over_time({job=\"nginx\", log_type=\"error\"} |= \"111: Connection refused\" [$__auto]))",
+          "legendFormat": "connection refused (502)",
+          "refId": "D",
+          "editorMode": "code",
+          "queryType": "range"
+        },
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "${loki}"
+          },
+          "expr": "sum(count_over_time({job=\"nginx\", log_type=\"error\"} |= \"no live upstreams\" [$__auto]))",
+          "legendFormat": "no live upstreams",
+          "refId": "E",
+          "editorMode": "code",
+          "queryType": "range"
+        },
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "${loki}"
+          },
+          "expr": "sum(count_over_time({job=\"nginx\", log_type=\"error\"} |= \"limiting requests\" [$__auto]))",
+          "legendFormat": "limiting requests",
+          "refId": "F",
+          "editorMode": "code",
+          "queryType": "range"
+        },
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "${loki}"
+          },
+          "expr": "sum(count_over_time({job=\"nginx\", log_type=\"error\"} |= \"client intended to send too large body\" [$__auto]))",
+          "legendFormat": "body too large",
+          "refId": "G",
+          "editorMode": "code",
+          "queryType": "range"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "lineWidth": 2,
+            "fillOpacity": 15,
+            "showPoints": "never",
+            "spanNulls": true,
+            "drawStyle": "bars"
+          },
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
+    },
+    {
+      "type": "logs",
+      "id": 24,
+      "title": "Recent error log lines",
+      "description": "Latest lines from the Nginx error log",
+      "datasource": {
+        "type": "loki",
+        "uid": "${loki}"
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 96
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "${loki}"
+          },
+          "expr": "{job=\"nginx\", log_type=\"error\"}",
+          "refId": "A",
+          "queryType": "range",
+          "editorMode": "code"
+        }
+      ],
+      "options": {
+        "showTime": true,
+        "wrapLogMessage": true,
+        "sortOrder": "Descending",
+        "enableLogDetails": true,
+        "dedupStrategy": "none"
+      }
+    }
+  ]
+}

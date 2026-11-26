@@ -1,0 +1,19 @@
+{
+  "name": "perfops-blokus",
+  "version": "1.0.0",
+  "description": "Blokus Online - Real-time Multi-player & PerfOps/SRE Sandbox",
+  "scripts": {
+    "dev": "npm run dev:server & npm run dev:client",
+    "dev:server": "npm --prefix server run dev",
+    "dev:client": "npm --prefix client run dev",
+    "build": "npm --prefix client run build",
+    "build:client": "npm --prefix client run build",
+    "start": "npm --prefix server run start",
+    "build:k6": "./server/node_modules/.bin/tsx load-test/build-k6.ts",
+    "k6:run": "k6 run load-test/dist/k6-blokus-workload.js",
+    "k6:smoke": "k6 run --vus 1 --duration 30s load-test/dist/k6-blokus-workload.js",
+    "k6:stress": "k6 run --vus 25 --duration 2m load-test/dist/k6-blokus-workload.js",
+    "k6:profile": "npm run build:k6 && k6 run -e PROFILE=true --vus 10 --duration 30s load-test/dist/k6-blokus-workload.js",
+    "flamegraph": "npx speedscope load-test.cpuprofile"
+  }
+}
