@@ -322,6 +322,7 @@ export const Board = React.memo(React.forwardRef<BoardHandle, BoardProps>(({
   };
 
   const handlePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (!isTouchingRef.current) return;
     const start = pointerStartRef.current;
     const metrics = cachedMetricsRef.current || refreshMetrics();
     const cell = metrics ? getCellFromCoords(e.clientX, e.clientY, metrics) : currentCellRef.current;
@@ -556,6 +557,15 @@ export const Board = React.memo(React.forwardRef<BoardHandle, BoardProps>(({
               onCommitMove();
             }}
             onPointerDown={(e) => {
+              e.stopPropagation();
+            }}
+            onPointerMove={(e) => {
+              e.stopPropagation();
+            }}
+            onPointerUp={(e) => {
+              e.stopPropagation();
+            }}
+            onPointerCancel={(e) => {
               e.stopPropagation();
             }}
             title="Confirm Placement"
