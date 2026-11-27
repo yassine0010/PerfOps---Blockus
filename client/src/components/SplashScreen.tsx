@@ -1,11 +1,13 @@
-import React, { useState, useEffect } from 'react';
-import { X, ArrowRight, HelpCircle, UserCheck } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { X, ArrowRight, HelpCircle, UserCheck, AlertCircle, WifiOff } from 'lucide-react';
 import { RulesScreen } from './RulesScreen';
 
 interface SplashScreenProps {
   onHostParty: (name: string) => void;
   onJoinParty: (roomId: string, name: string) => void;
   connected?: boolean;
+  lastError?: string | null;
+  onClearError?: () => void;
   currentUser?: { displayName: string; username: string } | null;
   onRulesToggle?: (open: boolean) => void;
 }
@@ -13,6 +15,9 @@ interface SplashScreenProps {
 export const SplashScreen: React.FC<SplashScreenProps> = ({
   onHostParty,
   onJoinParty,
+  connected = true,
+  lastError,
+  onClearError,
   currentUser,
   onRulesToggle
 }) => {
@@ -21,12 +26,35 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({
   const [roomCode, setRoomCode] = useState<string>('');
   const [showRules, setShowRules] = useState<boolean>(false);
   const [isSubmitting, setIsSubmitting] = useState<boolean>(false);
+  const [validationError, setValidationError] = useState<string | null>(null);
+  const submitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const clearSubmitTimer = () => {
+    if (submitTimerRef.current) {
+      clearTimeout(submitTimerRef.current);
+      submitTimerRef.current = null;
+    }
+  };
 
   useEffect(() => {
     if (currentUser?.displayName) {
       setPlayerName(currentUser.displayName);
+    } else if (!currentUser) {
+      setPlayerName('Player');
     }
   }, [currentUser]);
+
+  // Unlock submit button immediately if the server rejects Host/Join (keeps modal open to fix typos)
+  useEffect(() => {
+    if (lastError) {
+      clearSubmitTimer();
+      setIsSubmitting(false);
+    }
+  }, [lastError]);
+
+  useEffect(() => {
+    return () => clearSubmitTimer();
+  }, []);
 
   if (showRules) {
     return (
@@ -40,26 +68,60 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({
     );
   }
 
+  const handleOpenModal = (mode: 'HOST' | 'JOIN') => {
+    setValidationError(null);
+    onClearError?.();
+    setModalMode(mode);
+  };
+
+  const handleCloseModal = () => {
+    clearSubmitTimer();
+    setIsSubmitting(false);
+    setValidationError(null);
+    setModalMode('NONE');
+  };
+
   const handleHostSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!playerName.trim() || isSubmitting) return;
+    if (isSubmitting) return;
+    const trimmedName = playerName.trim();
+    if (!trimmedName) {
+      setValidationError('Please enter a nickname (cannot be blank).');
+      return;
+    }
+    setValidationError(null);
+    onClearError?.();
     setIsSubmitting(true);
-    onHostParty(playerName.trim());
-    setTimeout(() => {
+    onHostParty(trimmedName);
+    clearSubmitTimer();
+    submitTimerRef.current = setTimeout(() => {
+      submitTimerRef.current = null;
       setIsSubmitting(false);
-      setModalMode('NONE');
-    }, 1200);
+    }, 5000);
   };
 
   const handleJoinSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!playerName.trim() || !roomCode.trim() || isSubmitting) return;
+    if (isSubmitting) return;
+    const trimmedName = playerName.trim();
+    if (!trimmedName) {
+      setValidationError('Please enter a nickname (cannot be blank).');
+      return;
+    }
+    const trimmedCode = roomCode.trim().toUpperCase();
+    if (!trimmedCode) {
+      setValidationError('Please enter a 6-character game code.');
+      return;
+    }
+    setValidationError(null);
+    onClearError?.();
     setIsSubmitting(true);
-    onJoinParty(roomCode.trim().toUpperCase(), playerName.trim());
-    setTimeout(() => {
+    onJoinParty(trimmedCode, trimmedName);
+    clearSubmitTimer();
+    submitTimerRef.current = setTimeout(() => {
+      submitTimerRef.current = null;
       setIsSubmitting(false);
-      setModalMode('NONE');
-    }, 1200);
+    }, 5000);
   };
 
   return (
@@ -112,6 +174,27 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({
           gap: 24
         }}
       >
+        {/* Server offline / idle status indicator */}
+        {!connected && (
+          <div
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 6,
+              padding: '5px 12px',
+              borderRadius: 999,
+              background: '#FEF2F2',
+              border: '1px solid #FECACA',
+              fontSize: '0.76rem',
+              fontWeight: 700,
+              color: '#B91C1C'
+            }}
+          >
+            <WifiOff size={14} />
+            <span>Server offline · Connects when you play</span>
+          </div>
+        )}
+
         {/* Authenticated user banner */}
         {currentUser && (
           <div
@@ -136,7 +219,7 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({
 
         {/* JOIN GAME Button */}
         <button
-          onClick={() => setModalMode('JOIN')}
+          onClick={() => handleOpenModal('JOIN')}
           className="btn-coral"
           style={{
             width: '100%',
@@ -149,7 +232,7 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({
 
         {/* HOST GAME Button */}
         <button
-          onClick={() => setModalMode('HOST')}
+          onClick={() => handleOpenModal('HOST')}
           className="btn-coral"
           style={{
             width: '100%',
@@ -227,10 +310,7 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({
             }}
           >
             <button
-              onClick={() => {
-                setIsSubmitting(false);
-                setModalMode('NONE');
-              }}
+              onClick={handleCloseModal}
               style={{
                 position: 'absolute',
                 top: 16,
@@ -249,9 +329,30 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({
               <X size={18} color="#64748B" />
             </button>
 
-            <h3 style={{ fontSize: '1.3rem', fontWeight: 900, marginBottom: 18, color: '#1E232A' }}>
+            <h3 style={{ fontSize: '1.3rem', fontWeight: 900, marginBottom: 14, color: '#1E232A' }}>
               {modalMode === 'HOST' ? 'Host Game' : 'Join Game'}
             </h3>
+
+            {validationError && (
+              <div
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 8,
+                  padding: '9px 12px',
+                  background: '#FEF2F2',
+                  border: '1px solid #FECDD3',
+                  borderRadius: 12,
+                  marginBottom: 14,
+                  color: '#9F1239',
+                  fontSize: '0.8rem',
+                  fontWeight: 700
+                }}
+              >
+                <AlertCircle size={15} color="#EF4444" style={{ flexShrink: 0 }} />
+                <span>{validationError}</span>
+              </div>
+            )}
 
             <form onSubmit={modalMode === 'HOST' ? handleHostSubmit : handleJoinSubmit}>
               <div style={{ marginBottom: 16 }}>
@@ -261,7 +362,10 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({
                 <input
                   type="text"
                   value={playerName}
-                  onChange={e => setPlayerName(e.target.value)}
+                  onChange={e => {
+                    setPlayerName(e.target.value);
+                    if (validationError) setValidationError(null);
+                  }}
                   placeholder="e.g. Nolan"
                   maxLength={15}
                   required
@@ -286,8 +390,11 @@ export const SplashScreen: React.FC<SplashScreenProps> = ({
                   <input
                     type="text"
                     value={roomCode}
-                    onChange={e => setRoomCode(e.target.value.toUpperCase())}
-                    placeholder="e.g. B7K4P"
+                    onChange={e => {
+                      setRoomCode(e.target.value.toUpperCase());
+                      if (validationError) setValidationError(null);
+                    }}
+                    placeholder="e.g. B7K4P2"
                     maxLength={6}
                     required
                     style={{

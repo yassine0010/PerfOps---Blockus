@@ -1,4 +1,4 @@
-import React, { useEffect, useImperativeHandle, useRef, useState } from 'react';
+import React, { useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { Check } from 'lucide-react';
 import {
   BOARD_SIZE,
@@ -11,14 +11,14 @@ import {
 } from '../../../shared/index.ts';
 
 export interface BoardHandle {
-  handleExternalPointerDown: (clientX: number, clientY: number) => void;
+  handleExternalPointerDown: (clientX: number, clientY: number, piece?: PieceDefinition) => void;
   handleExternalPointerMove: (clientX: number, clientY: number) => void;
-  handleExternalPointerUp: () => void;
+  handleExternalPointerUp: (clientX?: number, clientY?: number) => void;
+  handleExternalPointerCancel: () => void;
 }
 
 interface BoardProps {
   board: (PlayerColor | null)[][];
-  activePlayerColor: PlayerColor;
   myColor: PlayerColor;
   isMyTurn: boolean;
   selectedPiece: PieceDefinition | null;
@@ -32,6 +32,16 @@ interface BoardProps {
   showLoupe?: boolean;
 }
 
+interface CachedBoardMetrics {
+  rect: DOMRect;
+  contentLeft: number;
+  contentTop: number;
+  cellPitchX: number;
+  cellPitchY: number;
+  gapX: number;
+  gapY: number;
+}
+
 const COLOR_FILLS: Record<PlayerColor, { base: string; dark: string; light: string }> = {
   BLUE: { base: '#3E82F7', dark: '#2563EB', light: '#93C5FD' },
   YELLOW: { base: '#F5A623', dark: '#D97706', light: '#FDE68A' },
@@ -39,7 +49,64 @@ const COLOR_FILLS: Record<PlayerColor, { base: string; dark: string; light: stri
   GREEN: { base: '#38A169', dark: '#059669', light: '#86EFAC' }
 };
 
-export const Board = React.forwardRef<BoardHandle, BoardProps>(({
+const CORNER_COLORS_MAP = new Map<number, PlayerColor>(
+  (Object.entries(STARTING_CORNERS) as [PlayerColor, [number, number]][]).map(
+    ([color, [cx, cy]]) => [cy * BOARD_SIZE + cx, color]
+  )
+);
+
+const hasCoord = (coords: [number, number][], x: number, y: number): boolean => {
+  for (let i = 0; i < coords.length; i++) {
+    if (coords[i][0] === x && coords[i][1] === y) return true;
+  }
+  return false;
+};
+
+const PlacedGrid = React.memo<{ board: (PlayerColor | null)[][] }>(({ board }) => (
+  <>
+    {board.map((row, y) =>
+      row.map((cellColor, x) => {
+        const cornerColor = !cellColor ? CORNER_COLORS_MAP.get(y * BOARD_SIZE + x) : undefined;
+        return (
+          <div
+            key={y * BOARD_SIZE + x}
+            style={{
+              position: 'relative',
+              width: '100%',
+              height: '100%',
+              borderRadius: 3.5,
+              background: cellColor ? COLOR_FILLS[cellColor].base : '#F6F8FA',
+              border: cellColor
+                ? `1px solid ${COLOR_FILLS[cellColor].dark}`
+                : '1px solid rgba(226, 232, 240, 0.6)',
+              boxShadow: cellColor
+                ? `inset 0 1.5px 0 ${COLOR_FILLS[cellColor].light}`
+                : 'none'
+            }}
+          >
+            {cornerColor && (
+              <div
+                style={{
+                  position: 'absolute',
+                  top: '50%',
+                  left: '50%',
+                  transform: 'translate(-50%, -50%)',
+                  width: 5,
+                  height: 5,
+                  borderRadius: '50%',
+                  background: COLOR_FILLS[cornerColor].base,
+                  opacity: 0.8
+                }}
+              />
+            )}
+          </div>
+        );
+      })
+    )}
+  </>
+));
+
+export const Board = React.memo(React.forwardRef<BoardHandle, BoardProps>(({
   board,
   myColor,
   isMyTurn,
@@ -58,37 +125,53 @@ export const Board = React.forwardRef<BoardHandle, BoardProps>(({
 
   const boardRef = useRef<HTMLDivElement>(null);
   const loupeRef = useRef<HTMLDivElement>(null);
-  const cachedRectRef = useRef<DOMRect | null>(null);
+  const cachedMetricsRef = useRef<CachedBoardMetrics | null>(null);
   const currentCellRef = useRef<[number, number] | null>(null);
   const isTouchingRef = useRef<boolean>(false);
+  const pointerStartRef = useRef<{ x: number; y: number } | null>(null);
   const lastTouchPosRef = useRef<{ x: number; y: number } | null>(null);
   const lastTapTimeRef = useRef<number>(0);
+
+  const selectedPieceRef = useRef<PieceDefinition | null>(selectedPiece);
+  selectedPieceRef.current = selectedPiece;
+  const isMyTurnRef = useRef<boolean>(isMyTurn);
+  isMyTurnRef.current = isMyTurn;
 
   // Active placement candidate origin: either hovered or selected
   const activeOrigin = hoverOrigin || targetOrigin;
 
-  let ghostCoords: [number, number][] = [];
-  let isGhostValid = false;
-
-  if (selectedPiece && activeOrigin && isMyTurn) {
-    ghostCoords = getPieceAbsoluteCoords(
+  const { ghostCoords, isGhostValid } = useMemo(() => {
+    if (!selectedPiece || !activeOrigin || !isMyTurn) {
+      return { ghostCoords: [] as [number, number][], isGhostValid: false };
+    }
+    const coords = getPieceAbsoluteCoords(
       selectedPiece.shape,
       rotation,
       flip,
       activeOrigin[0],
       activeOrigin[1]
     );
-    const validation = isValidPlacement(board, ghostCoords, myColor, isFirstMove);
-    isGhostValid = validation.valid;
-  }
+    const validation = isValidPlacement(board, coords, myColor, isFirstMove);
+    return { ghostCoords: coords, isGhostValid: validation.valid };
+  }, [selectedPiece, activeOrigin, isMyTurn, rotation, flip, board, myColor, isFirstMove]);
 
-  // Pre-calculate ghost map for fast O(1) lookup
-  const ghostMap = new Map<string, boolean>();
-  ghostCoords.forEach(([gx, gy]) => {
-    if (gx >= 0 && gx < BOARD_SIZE && gy >= 0 && gy < BOARD_SIZE) {
-      ghostMap.set(`${gx},${gy}`, true);
+  const { targetGhostCoords, isTargetGhostValid } = useMemo(() => {
+    if (!selectedPiece || !targetOrigin || !isMyTurn) {
+      return { targetGhostCoords: [] as [number, number][], isTargetGhostValid: false };
     }
-  });
+    if (activeOrigin && activeOrigin[0] === targetOrigin[0] && activeOrigin[1] === targetOrigin[1]) {
+      return { targetGhostCoords: ghostCoords, isTargetGhostValid: isGhostValid };
+    }
+    const coords = getPieceAbsoluteCoords(
+      selectedPiece.shape,
+      rotation,
+      flip,
+      targetOrigin[0],
+      targetOrigin[1]
+    );
+    const validation = isValidPlacement(board, coords, myColor, isFirstMove);
+    return { targetGhostCoords: coords, isTargetGhostValid: validation.valid };
+  }, [selectedPiece, targetOrigin, isMyTurn, activeOrigin, ghostCoords, isGhostValid, rotation, flip, board, myColor, isFirstMove]);
 
   // Calculate loupe position directly without forcing React layout reflows
   const applyLoupePosition = (relX: number, relY: number, boardWidth: number) => {
@@ -100,84 +183,188 @@ export const Board = React.forwardRef<BoardHandle, BoardProps>(({
     loupeRef.current.style.transform = `translate3d(${left}px, ${top}px, 0)`;
   };
 
-  // Position loupe initially as soon as touch begins
-  useEffect(() => {
-    if (isPointerTouching && lastTouchPosRef.current && cachedRectRef.current) {
+  // Position loupe synchronously before paint as soon as touch begins or activeOrigin mounts
+  useLayoutEffect(() => {
+    if (isPointerTouching && activeOrigin && lastTouchPosRef.current && cachedMetricsRef.current) {
       applyLoupePosition(
         lastTouchPosRef.current.x,
         lastTouchPosRef.current.y,
-        cachedRectRef.current.width
+        cachedMetricsRef.current.rect.width
       );
     }
-  }, [isPointerTouching]);
+  }, [isPointerTouching, Boolean(activeOrigin), activeOrigin?.[0], activeOrigin?.[1]]);
+
+  const clearPointerState = () => {
+    isTouchingRef.current = false;
+    setIsPointerTouching(false);
+    pointerStartRef.current = null;
+    currentCellRef.current = null;
+    setHoverOrigin(null);
+  };
+
+  useEffect(() => {
+    if (!isMyTurn || !selectedPiece) {
+      clearPointerState();
+    }
+  }, [isMyTurn, selectedPiece]);
+
+  const refreshMetrics = (): CachedBoardMetrics | null => {
+    if (!boardRef.current) return null;
+    const rect = boardRef.current.getBoundingClientRect();
+    const cs = window.getComputedStyle(boardRef.current);
+    const padLeft = parseFloat(cs.paddingLeft) || 0;
+    const padRight = parseFloat(cs.paddingRight) || 0;
+    const padTop = parseFloat(cs.paddingTop) || 0;
+    const padBottom = parseFloat(cs.paddingBottom) || 0;
+    const borderLeft = parseFloat(cs.borderLeftWidth) || 0;
+    const borderRight = parseFloat(cs.borderRightWidth) || 0;
+    const borderTop = parseFloat(cs.borderTopWidth) || 0;
+    const borderBottom = parseFloat(cs.borderBottomWidth) || 0;
+    const gapX = parseFloat(cs.columnGap || cs.gap) || 0;
+    const gapY = parseFloat(cs.rowGap || cs.gap) || 0;
+
+    const innerWidth = Math.max(1, rect.width - borderLeft - borderRight - padLeft - padRight);
+    const innerHeight = Math.max(1, rect.height - borderTop - borderBottom - padTop - padBottom);
+
+    const metrics: CachedBoardMetrics = {
+      rect,
+      contentLeft: rect.left + borderLeft + padLeft,
+      contentTop: rect.top + borderTop + padTop,
+      cellPitchX: (innerWidth + gapX) / BOARD_SIZE,
+      cellPitchY: (innerHeight + gapY) / BOARD_SIZE,
+      gapX,
+      gapY
+    };
+    cachedMetricsRef.current = metrics;
+    return metrics;
+  };
+
+  const getCellFromCoords = (clientX: number, clientY: number, m: CachedBoardMetrics): [number, number] | null => {
+    const gx = Math.floor((clientX - m.contentLeft + m.gapX * 0.5) / m.cellPitchX);
+    const gy = Math.floor((clientY - m.contentTop + m.gapY * 0.5) / m.cellPitchY);
+    if (gx >= 0 && gx < BOARD_SIZE && gy >= 0 && gy < BOARD_SIZE) {
+      return [gx, gy];
+    }
+    return null;
+  };
 
   const updatePointer = (clientX: number, clientY: number) => {
-    if (!boardRef.current || !selectedPiece || !isMyTurn) return;
+    if (!boardRef.current || !selectedPieceRef.current || !isMyTurnRef.current) return;
 
-    // Use cached rect during drag to eliminate layout thrashing
-    const rect = cachedRectRef.current || boardRef.current.getBoundingClientRect();
-    const boardWidth = rect.width;
-    const cellSize = boardWidth / BOARD_SIZE;
+    const m = cachedMetricsRef.current || refreshMetrics();
+    if (!m) return;
 
-    const relX = clientX - rect.left;
-    const relY = clientY - rect.top;
+    const relX = clientX - m.rect.left;
+    const relY = clientY - m.rect.top;
     lastTouchPosRef.current = { x: relX, y: relY };
 
     // 1. Direct hardware-accelerated loupe positioning (Zero React re-renders)
-    applyLoupePosition(relX, relY, boardWidth);
+    applyLoupePosition(relX, relY, m.rect.width);
 
-    // 2. Determine grid cell
-    const gx = Math.floor(relX / cellSize);
-    const gy = Math.floor(relY / cellSize);
-
-    if (gx >= 0 && gx < BOARD_SIZE && gy >= 0 && gy < BOARD_SIZE) {
+    // 2. Determine grid cell accurately accounting for border, padding, and grid gaps
+    const cell = getCellFromCoords(clientX, clientY, m);
+    if (cell) {
+      const [gx, gy] = cell;
       // ONLY trigger React re-render when the grid cell actually changes!
       if (!currentCellRef.current || currentCellRef.current[0] !== gx || currentCellRef.current[1] !== gy) {
         currentCellRef.current = [gx, gy];
         setHoverOrigin([gx, gy]);
       }
+    } else if (currentCellRef.current !== null) {
+      currentCellRef.current = null;
+      setHoverOrigin(null);
     }
+  };
+
+  const validateCell = (gx: number, gy: number, pieceOverride?: PieceDefinition | null): boolean => {
+    const piece = pieceOverride ?? selectedPieceRef.current;
+    if (!piece || !isMyTurnRef.current) return false;
+    if (activeOrigin && activeOrigin[0] === gx && activeOrigin[1] === gy && piece === selectedPiece) {
+      return isGhostValid;
+    }
+    const testCoords = getPieceAbsoluteCoords(piece.shape, rotation, flip, gx, gy);
+    return isValidPlacement(board, testCoords, myColor, isFirstMove).valid;
   };
 
   const handlePointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
     if (!selectedPiece || !isMyTurn) return;
-    isTouchingRef.current = true;
-    setIsPointerTouching(true);
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
 
-    if (boardRef.current) {
-      cachedRectRef.current = boardRef.current.getBoundingClientRect();
-    }
+    const metrics = refreshMetrics();
+    const downCell = metrics ? getCellFromCoords(e.clientX, e.clientY, metrics) : null;
+    const tappedExistingGhost =
+      placementMode === 'DOUBLE_TAP' &&
+      Boolean(targetOrigin && downCell && hasCoord(targetGhostCoords, downCell[0], downCell[1]));
+
+    isTouchingRef.current = true;
+    pointerStartRef.current = { x: e.clientX, y: e.clientY };
 
     try {
       e.currentTarget.setPointerCapture(e.pointerId);
     } catch {}
 
-    updatePointer(e.clientX, e.clientY);
+    if (!tappedExistingGhost) {
+      setIsPointerTouching(true);
+      updatePointer(e.clientX, e.clientY);
+    }
   };
 
   const handlePointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
     if (!isTouchingRef.current) return;
+    if (!isPointerTouching) {
+      const start = pointerStartRef.current;
+      if (!start || Math.hypot(e.clientX - start.x, e.clientY - start.y) < 8) {
+        return;
+      }
+      setIsPointerTouching(true);
+    }
     updatePointer(e.clientX, e.clientY);
   };
 
   const handlePointerUp = (e: React.PointerEvent<HTMLDivElement>) => {
-    isTouchingRef.current = false;
-    setIsPointerTouching(false);
+    const start = pointerStartRef.current;
+    const metrics = cachedMetricsRef.current || refreshMetrics();
+    const cell = metrics ? getCellFromCoords(e.clientX, e.clientY, metrics) : currentCellRef.current;
+    const isTap = Boolean(start && Math.hypot(e.clientX - start.x, e.clientY - start.y) < 8);
+
+    clearPointerState();
     try {
       e.currentTarget.releasePointerCapture(e.pointerId);
     } catch {}
-    // Propagate final ghost position to parent now that drag has ended
-    if (currentCellRef.current && selectedPiece && isMyTurn) {
-      const [gx, gy] = currentCellRef.current;
-      const testCoords = getPieceAbsoluteCoords(selectedPiece.shape, rotation, flip, gx, gy);
-      const valid = isValidPlacement(board, testCoords, myColor, isFirstMove).valid;
+
+    if (cell && selectedPiece && isMyTurn) {
+      const [gx, gy] = cell;
+      const now = Date.now();
+
+      if (
+        isTap &&
+        placementMode === 'DOUBLE_TAP' &&
+        targetOrigin &&
+        hasCoord(targetGhostCoords, gx, gy)
+      ) {
+        const timeSinceLastTap = now - lastTapTimeRef.current;
+        if (isTargetGhostValid && timeSinceLastTap < 450) {
+          lastTapTimeRef.current = 0;
+          onCommitMove();
+          return;
+        }
+        if (isTargetGhostValid) {
+          lastTapTimeRef.current = now;
+          return;
+        }
+      }
+
+      const valid = validateCell(gx, gy);
+      if (isTap) {
+        lastTapTimeRef.current = now;
+      }
+
       onSelectPlacementOrigin([gx, gy], valid);
     }
   };
 
   const handlePointerCancel = (e: React.PointerEvent<HTMLDivElement>) => {
-    isTouchingRef.current = false;
-    setIsPointerTouching(false);
+    clearPointerState();
     try {
       e.currentTarget.releasePointerCapture(e.pointerId);
     } catch {}
@@ -192,63 +379,43 @@ export const Board = React.forwardRef<BoardHandle, BoardProps>(({
 
   // Expose methods for dragging from outside the board (e.g. from PieceTray)
   useImperativeHandle(ref, () => ({
-    handleExternalPointerDown: (clientX: number, clientY: number) => {
-      if (!selectedPiece || !isMyTurn) return;
+    handleExternalPointerDown: (clientX: number, clientY: number, piece?: PieceDefinition) => {
+      const activePiece = piece ?? selectedPieceRef.current;
+      if (!activePiece || !isMyTurnRef.current) return;
+      selectedPieceRef.current = activePiece;
       isTouchingRef.current = true;
       setIsPointerTouching(true);
-      if (boardRef.current) {
-        cachedRectRef.current = boardRef.current.getBoundingClientRect();
-      }
+      refreshMetrics();
       updatePointer(clientX, clientY);
     },
     handleExternalPointerMove: (clientX: number, clientY: number) => {
+      if (!selectedPieceRef.current || !isMyTurnRef.current) return;
       if (!isTouchingRef.current) {
         isTouchingRef.current = true;
         setIsPointerTouching(true);
-        if (boardRef.current) {
-          cachedRectRef.current = boardRef.current.getBoundingClientRect();
-        }
+        refreshMetrics();
       }
       updatePointer(clientX, clientY);
     },
-    handleExternalPointerUp: () => {
-      isTouchingRef.current = false;
-      setIsPointerTouching(false);
-      // Propagate final ghost position to parent now that drag has ended
-      if (currentCellRef.current && selectedPiece && isMyTurn) {
-        const [gx, gy] = currentCellRef.current;
-        const testCoords = getPieceAbsoluteCoords(selectedPiece.shape, rotation, flip, gx, gy);
-        const valid = isValidPlacement(board, testCoords, myColor, isFirstMove).valid;
+    handleExternalPointerUp: (clientX?: number, clientY?: number) => {
+      const metrics = cachedMetricsRef.current || refreshMetrics();
+      const finalCell =
+        clientX !== undefined && clientY !== undefined && metrics
+          ? getCellFromCoords(clientX, clientY, metrics)
+          : currentCellRef.current;
+      const activePiece = selectedPieceRef.current;
+      const myTurn = isMyTurnRef.current;
+      clearPointerState();
+      if (finalCell && activePiece && myTurn) {
+        const [gx, gy] = finalCell;
+        const valid = validateCell(gx, gy, activePiece);
         onSelectPlacementOrigin([gx, gy], valid);
       }
+    },
+    handleExternalPointerCancel: () => {
+      clearPointerState();
     }
   }));
-
-  const handleCellClick = (x: number, y: number) => {
-    if (!selectedPiece || !isMyTurn) return;
-    const now = Date.now();
-    const timeSinceLastTap = now - lastTapTimeRef.current;
-
-    // Double Tap Confirmation Support:
-    // MUST be a rapid double-tap (within 380ms) on the target or ghost piece to confirm!
-    if (placementMode === 'DOUBLE_TAP') {
-      const isSameTarget = targetOrigin && targetOrigin[0] === x && targetOrigin[1] === y;
-      const isGhostCell = ghostMap.has(`${x},${y}`);
-
-      if ((isSameTarget || isGhostCell) && isGhostValid && timeSinceLastTap < 380) {
-        lastTapTimeRef.current = 0;
-        onCommitMove();
-        return;
-      }
-    }
-
-    // Record tap time
-    lastTapTimeRef.current = now;
-
-    const testCoords = getPieceAbsoluteCoords(selectedPiece.shape, rotation, flip, x, y);
-    const valid = isValidPlacement(board, testCoords, myColor, isFirstMove).valid;
-    onSelectPlacementOrigin([x, y], valid);
-  };
 
   // Magnifier Loupe calculation: 5x5 sub-grid centered on activeOrigin
   const loupeOriginX = activeOrigin ? activeOrigin[0] : 0;
@@ -290,30 +457,6 @@ export const Board = React.forwardRef<BoardHandle, BoardProps>(({
       onPointerUp={handlePointerUp}
       onPointerCancel={handlePointerCancel}
       onPointerLeave={handlePointerLeave}
-      onDragOver={(e) => {
-        e.preventDefault();
-        e.dataTransfer.dropEffect = 'copy';
-        if (!isTouchingRef.current) {
-          isTouchingRef.current = true;
-          setIsPointerTouching(true);
-          if (boardRef.current) {
-            cachedRectRef.current = boardRef.current.getBoundingClientRect();
-          }
-        }
-        updatePointer(e.clientX, e.clientY);
-      }}
-      onDrop={(e) => {
-        e.preventDefault();
-        isTouchingRef.current = false;
-        setIsPointerTouching(false);
-        // Propagate final position after HTML5 drop
-        if (currentCellRef.current && selectedPiece && isMyTurn) {
-          const [gx, gy] = currentCellRef.current;
-          const testCoords = getPieceAbsoluteCoords(selectedPiece.shape, rotation, flip, gx, gy);
-          const valid = isValidPlacement(board, testCoords, myColor, isFirstMove).valid;
-          onSelectPlacementOrigin([gx, gy], valid);
-        }
-      }}
       style={{
         position: 'relative',
         width: '100%',
@@ -327,95 +470,70 @@ export const Board = React.forwardRef<BoardHandle, BoardProps>(({
         gridTemplateColumns: `repeat(${BOARD_SIZE}, 1fr)`,
         gridTemplateRows: `repeat(${BOARD_SIZE}, 1fr)`,
         gap: 1.2,
+        cursor: selectedPiece && isMyTurn ? 'pointer' : 'default',
         touchAction: 'none',
         userSelect: 'none',
         WebkitUserSelect: 'none',
         WebkitTouchCallout: 'none'
       }}
     >
-      {/* Interactive 20x20 Grid Cells */}
-      {Array.from({ length: BOARD_SIZE }).map((_, y) =>
-        Array.from({ length: BOARD_SIZE }).map((__, x) => {
-          const cellColor = board[y][x];
-          const isGhost = ghostMap.has(`${x},${y}`);
-          const isAnchor = activeOrigin && activeOrigin[0] === x && activeOrigin[1] === y;
+      {/* Static 20x20 Placed Board Grid (memoized; re-renders only when board changes) */}
+      <PlacedGrid board={board} />
 
-          const isCorner =
-            (x === 0 && y === 0) ||
-            (x === 19 && y === 0) ||
-            (x === 0 && y === 19) ||
-            (x === 19 && y === 19);
-
-          let cornerColor: PlayerColor | null = null;
-          if (x === 0 && y === 0) cornerColor = 'YELLOW';
-          if (x === 19 && y === 0) cornerColor = 'RED';
-          if (x === 0 && y === 19) cornerColor = 'BLUE';
-          if (x === 19 && y === 19) cornerColor = 'GREEN';
-
-          return (
-            <div
-              key={`${x}-${y}`}
-              onClick={() => handleCellClick(x, y)}
-              style={{
-                position: 'relative',
-                width: '100%',
-                height: '100%',
-                borderRadius: 3.5,
-                background: cellColor
-                  ? COLOR_FILLS[cellColor].base
-                  : isGhost
-                  ? isGhostValid
+      {/* Independent 1-5 Cell Ghost Preview Overlay */}
+      {ghostCoords.length > 0 && (
+        <div
+          style={{
+            position: 'absolute',
+            inset: 5,
+            display: 'grid',
+            gridTemplateColumns: `repeat(${BOARD_SIZE}, 1fr)`,
+            gridTemplateRows: `repeat(${BOARD_SIZE}, 1fr)`,
+            gap: 1.2,
+            pointerEvents: 'none',
+            zIndex: 5
+          }}
+        >
+          {ghostCoords.map(([gx, gy]) => {
+            if (gx < 0 || gx >= BOARD_SIZE || gy < 0 || gy >= BOARD_SIZE) return null;
+            const isAnchor = Boolean(activeOrigin && activeOrigin[0] === gx && activeOrigin[1] === gy);
+            return (
+              <div
+                key={`ghost-${gx}-${gy}`}
+                style={{
+                  gridColumn: gx + 1,
+                  gridRow: gy + 1,
+                  position: 'relative',
+                  width: '100%',
+                  height: '100%',
+                  borderRadius: 3.5,
+                  background: isGhostValid
                     ? 'rgba(56, 161, 105, 0.45)'
-                    : 'rgba(239, 68, 68, 0.35)'
-                  : '#F6F8FA',
-                border: cellColor
-                  ? `1px solid ${COLOR_FILLS[cellColor].dark}`
-                  : isGhost
-                  ? isGhostValid
+                    : 'rgba(239, 68, 68, 0.35)',
+                  border: isGhostValid
                     ? '1.5px dashed #22C55E'
                     : '1.5px dashed #EF4444'
-                  : '1px solid rgba(226, 232, 240, 0.6)',
-                boxShadow: cellColor
-                  ? `inset 0 1.5px 0 ${COLOR_FILLS[cellColor].light}`
-                  : 'none',
-                cursor: selectedPiece && isMyTurn ? 'pointer' : 'default',
-                transition: 'background 0.08s ease'
-              }}
-            >
-              {!cellColor && isCorner && (
-                <div
-                  style={{
-                    position: 'absolute',
-                    top: '50%',
-                    left: '50%',
-                    transform: 'translate(-50%, -50%)',
-                    width: 5,
-                    height: 5,
-                    borderRadius: '50%',
-                    background: cornerColor ? COLOR_FILLS[cornerColor].base : '#CBD5E1',
-                    opacity: 0.8
-                  }}
-                />
-              )}
-
-              {isGhost && isAnchor && isGhostValid && !showConfirmButton && (
-                <div
-                  style={{
-                    position: 'absolute',
-                    top: '50%',
-                    left: '50%',
-                    transform: 'translate(-50%, -50%)',
-                    width: 14,
-                    height: 14,
-                    borderRadius: '50%',
-                    border: '2px dashed #16A34A',
-                    animation: 'pulseGlow 1s infinite'
-                  }}
-                />
-              )}
-            </div>
-          );
-        })
+                }}
+              >
+                {isAnchor && isGhostValid && !showConfirmButton && (
+                  <div
+                    style={{
+                      position: 'absolute',
+                      top: '50%',
+                      left: '50%',
+                      transform: 'translate(-50%, -50%)',
+                      width: 14,
+                      height: 14,
+                      borderRadius: '50%',
+                      border: '2px dashed #16A34A',
+                      animation: 'pulseGlow 1s infinite'
+                    }}
+                  />
+                )}
+              </div>
+            );
+          })}
+        </div>
       )}
 
       {/* Floating Circular Confirmation Button (pops up on valid move) */}
@@ -463,7 +581,7 @@ export const Board = React.forwardRef<BoardHandle, BoardProps>(({
       )}
 
       {/* Magnifier Loupe: Hardware-accelerated translate3d for zero-lag silky smooth glide */}
-      {showLoupe && isPointerTouching && activeOrigin && selectedPiece && isMyTurn && (
+      {showLoupe && isPointerTouching && hoverOrigin && selectedPiece && isMyTurn && (
         <div
           ref={loupeRef}
           style={{
@@ -542,21 +660,9 @@ export const Board = React.forwardRef<BoardHandle, BoardProps>(({
                 const subY = loupeOriginY + dy;
                 const isOutOfBounds = subX < 0 || subX >= BOARD_SIZE || subY < 0 || subY >= BOARD_SIZE;
                 const cellColor = !isOutOfBounds ? board[subY][subX] : null;
-                const isSubGhost = ghostMap.has(`${subX},${subY}`);
+                const isSubGhost = hasCoord(ghostCoords, subX, subY);
                 const isCenter = dx === 0 && dy === 0;
-
-                const isLoupeCorner =
-                  !isOutOfBounds &&
-                  ((subX === 0 && subY === 0) ||
-                    (subX === 19 && subY === 0) ||
-                    (subX === 0 && subY === 19) ||
-                    (subX === 19 && subY === 19));
-
-                let loupeCornerColor: PlayerColor | null = null;
-                if (subX === 0 && subY === 0) loupeCornerColor = 'YELLOW';
-                if (subX === 19 && subY === 0) loupeCornerColor = 'RED';
-                if (subX === 0 && subY === 19) loupeCornerColor = 'BLUE';
-                if (subX === 19 && subY === 19) loupeCornerColor = 'GREEN';
+                const loupeCornerColor = !isOutOfBounds ? CORNER_COLORS_MAP.get(subY * BOARD_SIZE + subX) : undefined;
 
                 return (
                   <div
@@ -596,13 +702,13 @@ export const Board = React.forwardRef<BoardHandle, BoardProps>(({
                       WebkitUserSelect: 'none'
                     }}
                   >
-                    {!cellColor && isLoupeCorner && (
+                    {!cellColor && loupeCornerColor && (
                       <div
                         style={{
                           width: 5,
                           height: 5,
                           borderRadius: '50%',
-                          background: loupeCornerColor ? COLOR_FILLS[loupeCornerColor].base : '#94A3B8',
+                          background: COLOR_FILLS[loupeCornerColor].base,
                           opacity: 0.9
                         }}
                       />
@@ -630,4 +736,4 @@ export const Board = React.forwardRef<BoardHandle, BoardProps>(({
       )}
     </div>
   );
-});
+}));

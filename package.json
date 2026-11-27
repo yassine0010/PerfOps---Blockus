@@ -8,7 +8,7 @@
     "dev:client": "npm --prefix client run dev",
     "build": "npm --prefix client run build",
     "build:client": "npm --prefix client run build",
-    "start": "npm --prefix server run start",
+    "start": "NODE_ENV=production npm --prefix server run start",
     "build:k6": "./server/node_modules/.bin/tsx load-test/build-k6.ts",
     "k6:run": "k6 run load-test/dist/k6-blokus-workload.js",
     "k6:smoke": "k6 run --vus 1 --duration 30s load-test/dist/k6-blokus-workload.js",

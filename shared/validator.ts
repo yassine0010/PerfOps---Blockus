@@ -109,39 +109,105 @@ export interface CandidateMove {
   coords: [number, number][];
 }
 
-/**
- * Checks if the player has at least one valid move remaining on the board.
- * Heavily optimized: narrows the search space by pre-computing which board
- * positions could possibly satisfy placement rules, instead of brute-forcing
- * all 400 cells per orientation.
- */
-export function findFirstLegalMove(
-  board: (PlayerColor | null)[][],
-  remainingPieces: PieceId[],
-  color: PlayerColor,
-  isFirstMove: boolean
-): CandidateMove | null {
+interface PrecomputedOrientation {
+  rotation: number;
+  flip: boolean;
+  cells: [number, number][];
+  minDx: number;
+  minDy: number;
+  maxDx: number;
+  maxDy: number;
+}
+
+const UNIQUE_ORIENTATIONS: Map<PieceId, PrecomputedOrientation[]> = (() => {
+  const map = new Map<PieceId, PrecomputedOrientation[]>();
   const rotations = [0, 90, 180, 270];
   const flips = [false, true];
 
-  // For non-first moves, pre-compute candidate target cells:
-  // empty cells diagonally adjacent to an existing same-color piece.
-  // A valid placement MUST cover at least one of these cells.
+  for (const pieceId of Object.keys(PIECES) as PieceId[]) {
+    const piece = PIECES[pieceId];
+    const seenSignatures = new Set<string>();
+    const list: PrecomputedOrientation[] = [];
+
+    for (const flip of flips) {
+      for (const rot of rotations) {
+        const transformed = transformShape(piece.shape, rot, flip);
+        const cells = getShapeCells(transformed);
+        // Canonical signature handles identical orientations produced by symmetry
+        const signature = cells.map(([dx, dy]) => `${dx},${dy}`).join(';');
+        if (seenSignatures.has(signature)) continue;
+        seenSignatures.add(signature);
+
+        let minDx = BOARD_SIZE, minDy = BOARD_SIZE, maxDx = 0, maxDy = 0;
+        for (const [dx, dy] of cells) {
+          if (dx < minDx) minDx = dx;
+          if (dy < minDy) minDy = dy;
+          if (dx > maxDx) maxDx = dx;
+          if (dy > maxDy) maxDy = dy;
+        }
+        list.push({ rotation: rot, flip, cells, minDx, minDy, maxDx, maxDy });
+      }
+    }
+    map.set(pieceId, list);
+  }
+  return map;
+})();
+
+// Module-level scratch buffers reused across synchronous findLegalMoveInternal() calls.
+const SCRATCH_FORBIDDEN = new Uint8Array(BOARD_SIZE * BOARD_SIZE);
+const SCRATCH_SEEN = new Uint8Array(BOARD_SIZE * BOARD_SIZE);
+const SCRATCH_TESTED = new Uint8Array(BOARD_SIZE * BOARD_SIZE);
+const DIAGONAL_OFFSETS: readonly [number, number][] = [[-1, -1], [1, -1], [-1, 1], [1, 1]];
+
+function findLegalMoveInternal(
+  board: (PlayerColor | null)[][],
+  remainingPieces: PieceId[],
+  color: PlayerColor,
+  isFirstMove: boolean,
+  preferLargest: boolean
+): CandidateMove | null {
+  if (remainingPieces.length === 0) return null;
+
+  // Build flat 20x20 forbidden-cell lookup: occupied OR orthogonally adjacent to same color
+  const forbidden = SCRATCH_FORBIDDEN;
+  forbidden.fill(0);
+  for (let y = 0; y < BOARD_SIZE; y++) {
+    const row = board[y];
+    const rowOffset = y * BOARD_SIZE;
+    for (let x = 0; x < BOARD_SIZE; x++) {
+      const cell = row[x];
+      if (cell !== null) {
+        forbidden[rowOffset + x] = 1;
+        if (!isFirstMove && cell === color) {
+          if (x > 0) forbidden[rowOffset + x - 1] = 1;
+          if (x + 1 < BOARD_SIZE) forbidden[rowOffset + x + 1] = 1;
+          if (y > 0) forbidden[rowOffset - BOARD_SIZE + x] = 1;
+          if (y + 1 < BOARD_SIZE) forbidden[rowOffset + BOARD_SIZE + x] = 1;
+        }
+      }
+    }
+  }
+
   let candidateTargets: [number, number][] | null = null;
-  if (!isFirstMove) {
+  if (isFirstMove) {
+    const [cornerX, cornerY] = STARTING_CORNERS[color];
+    if (forbidden[cornerY * BOARD_SIZE + cornerX]) return null;
+    candidateTargets = [[cornerX, cornerY]];
+  } else {
     candidateTargets = [];
-    const seen = new Set<number>();
-    const diags: [number, number][] = [[-1, -1], [1, -1], [-1, 1], [1, 1]];
+    const seen = SCRATCH_SEEN;
+    seen.fill(0);
     for (let y = 0; y < BOARD_SIZE; y++) {
+      const row = board[y];
       for (let x = 0; x < BOARD_SIZE; x++) {
-        if (board[y][x] === color) {
-          for (const [dx, dy] of diags) {
+        if (row[x] === color) {
+          for (const [dx, dy] of DIAGONAL_OFFSETS) {
             const nx = x + dx;
             const ny = y + dy;
-            if (nx >= 0 && nx < BOARD_SIZE && ny >= 0 && ny < BOARD_SIZE && board[ny][nx] === null) {
+            if (nx >= 0 && nx < BOARD_SIZE && ny >= 0 && ny < BOARD_SIZE) {
               const key = ny * BOARD_SIZE + nx;
-              if (!seen.has(key)) {
-                seen.add(key);
+              if (!seen[key] && !forbidden[key]) {
+                seen[key] = 1;
                 candidateTargets.push([nx, ny]);
               }
             }
@@ -152,61 +218,79 @@ export function findFirstLegalMove(
     if (candidateTargets.length === 0) return null;
   }
 
-  const startCorner = isFirstMove ? STARTING_CORNERS[color] : null;
+  const orderedPieces = preferLargest
+    ? [...remainingPieces].sort((a, b) => (PIECES[b]?.size || 0) - (PIECES[a]?.size || 0))
+    : remainingPieces;
 
-  for (const pieceId of remainingPieces) {
-    const piece = PIECES[pieceId];
-    if (!piece) continue;
+  const tested = SCRATCH_TESTED;
 
-    for (const flip of flips) {
-      for (const rot of rotations) {
-        const transformed = transformShape(piece.shape, rot, flip);
-        const shapeCells = getShapeCells(transformed);
+  for (const pieceId of orderedPieces) {
+    const orientations = UNIQUE_ORIENTATIONS.get(pieceId);
+    if (!orientations) continue;
 
-        // Pre-compute bounding box to skip out-of-bounds origins
-        let maxDx = 0, maxDy = 0;
-        for (const [dx, dy] of shapeCells) {
-          if (dx > maxDx) maxDx = dx;
-          if (dy > maxDy) maxDy = dy;
-        }
-        const limitX = BOARD_SIZE - maxDx;
-        const limitY = BOARD_SIZE - maxDy;
+    for (const orient of orientations) {
+      const { rotation, flip, cells, minDx, minDy, maxDx, maxDy } = orient;
+      const minOx = -minDx;
+      const minOy = -minDy;
+      const limitX = BOARD_SIZE - maxDx;
+      const limitY = BOARD_SIZE - maxDy;
 
-        if (startCorner) {
-          // First move: only test origins where a piece cell lands on the starting corner
-          const [cornerX, cornerY] = startCorner;
-          for (const [dx, dy] of shapeCells) {
-            const ox = cornerX - dx;
-            const oy = cornerY - dy;
-            if (ox < 0 || ox >= limitX || oy < 0 || oy >= limitY) continue;
-            const coords: [number, number][] = shapeCells.map(([ddx, ddy]) => [ox + ddx, oy + ddy]);
-            const res = isValidPlacement(board, coords, color, true);
-            if (res.valid) {
-              return { pieceId, rotation: rot, flip, originX: ox, originY: oy, coords };
+      tested.fill(0);
+
+      for (const [tx, ty] of candidateTargets) {
+        for (const [dx, dy] of cells) {
+          const ox = tx - dx;
+          const oy = ty - dy;
+          if (ox < minOx || ox >= limitX || oy < minOy || oy >= limitY) continue;
+
+          const originKey = oy * BOARD_SIZE + ox;
+          if (tested[originKey]) continue;
+          tested[originKey] = 1;
+
+          let blocked = false;
+          for (let i = 0; i < cells.length; i++) {
+            const [cx, cy] = cells[i];
+            if (forbidden[(oy + cy) * BOARD_SIZE + (ox + cx)]) {
+              blocked = true;
+              break;
             }
           }
-        } else if (candidateTargets) {
-          // Non-first move: only test origins where a piece cell lands on a candidate target
-          const tested = new Set<number>();
-          for (const [tx, ty] of candidateTargets) {
-            for (const [dx, dy] of shapeCells) {
-              const ox = tx - dx;
-              const oy = ty - dy;
-              if (ox < 0 || ox >= limitX || oy < 0 || oy >= limitY) continue;
-              const key = oy * BOARD_SIZE + ox;
-              if (tested.has(key)) continue;
-              tested.add(key);
 
-              const coords: [number, number][] = shapeCells.map(([ddx, ddy]) => [ox + ddx, oy + ddy]);
-              const res = isValidPlacement(board, coords, color, false);
-              if (res.valid) {
-                return { pieceId, rotation: rot, flip, originX: ox, originY: oy, coords };
-              }
-            }
+          if (!blocked) {
+            const coords: [number, number][] = cells.map(([cx, cy]) => [ox + cx, oy + cy]);
+            return { pieceId, rotation, flip, originX: ox, originY: oy, coords };
           }
         }
       }
     }
   }
+
   return null;
+}
+
+/**
+ * Checks if the player has at least one valid move remaining on the board.
+ * Uses deduplicated piece orientations (91 unique) and a flat 400-cell
+ * occupancy/orthogonal bitmask to eliminate inner-loop allocations.
+ */
+export function findFirstLegalMove(
+  board: (PlayerColor | null)[][],
+  remainingPieces: PieceId[],
+  color: PlayerColor,
+  isFirstMove: boolean
+): CandidateMove | null {
+  return findLegalMoveInternal(board, remainingPieces, color, isFirstMove, false);
+}
+
+/**
+ * Finds a legal move prioritizing larger pieces first (pentominoes -> monomino),
+ * saving smaller flexible pieces for late-game tight spots.
+ */
+export function findBotLegalMove(
+  board: (PlayerColor | null)[][],
+  remainingPieces: PieceId[],
+  color: PlayerColor,
+  isFirstMove: boolean
+): CandidateMove | null {
+  return findLegalMoveInternal(board, remainingPieces, color, isFirstMove, true);
 }

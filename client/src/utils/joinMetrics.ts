@@ -19,7 +19,6 @@ import { getApiBase } from './apiConfig';
 const API_BASE = () => getApiBase();
 const JOIN_TIMEOUT_MS = 15000;
 
-export type Outcome = 'success' | 'failure';
 export type ActionOutcome = 'success' | 'failure' | 'excluded';
 export type Kind = 'host' | 'join';
 
@@ -69,12 +68,14 @@ async function flushOfflineQueue(): Promise<void> {
   if (isFlushingQueue) return;
   if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
 
-  const queue = getOfflineQueue();
-  if (queue.length === 0) return;
+  if (getOfflineQueue().length === 0) return;
 
   isFlushingQueue = true;
   try {
-    while (queue.length > 0) {
+    while (true) {
+      const queue = getOfflineQueue();
+      if (queue.length === 0) break;
+
       const item = queue[0];
       const url = `${API_BASE()}${item.endpoint}`;
       try {
@@ -85,8 +86,24 @@ async function flushOfflineQueue(): Promise<void> {
           keepalive: true,
         });
         if (response.ok || response.status === 204 || (response.status >= 400 && response.status < 500)) {
-          queue.shift();
-          saveOfflineQueue(queue);
+          // Re-read localStorage after await so concurrently enqueued beacons are never lost
+          const latestQueue = getOfflineQueue();
+          if (
+            latestQueue.length > 0 &&
+            latestQueue[0].timestamp === item.timestamp &&
+            latestQueue[0].endpoint === item.endpoint
+          ) {
+            latestQueue.shift();
+            saveOfflineQueue(latestQueue);
+          } else {
+            const idx = latestQueue.findIndex(
+              q => q.timestamp === item.timestamp && q.endpoint === item.endpoint
+            );
+            if (idx !== -1) {
+              latestQueue.splice(idx, 1);
+              saveOfflineQueue(latestQueue);
+            }
+          }
         } else {
           // 5xx error: pause retrying until next trigger
           break;
@@ -156,6 +173,7 @@ function finishJoin(outcome: ActionOutcome) {
   if (!currentJoinAttemptId) return;
   const attemptId = currentJoinAttemptId;
   currentJoinAttemptId = null;
+  joinStartedAt = 0;
 
   if (currentJoinTimeoutId) {
     clearTimeout(currentJoinTimeoutId);
@@ -226,13 +244,13 @@ export const joinMetrics = {
     finishJoin('failure');
   },
 
-  /** Discard attempt (e.g. user navigation or cancel). Excluded from metrics. */
-  cancel() {
+  /** Wrong room code: player typo, excluded from availability metrics. */
+  wrongCode() {
     finishJoin('excluded');
   },
 
-  /** Wrong room code: player typo, excluded from availability metrics. */
-  wrongCode() {
+  /** Server rejected join/host validation (e.g. room full, already started). */
+  rejected() {
     finishJoin('excluded');
   },
 
@@ -274,13 +292,6 @@ export const joinMetrics = {
         timestamp: Date.now(),
       });
     };
-  },
-
-  /** Direct action outcome recorder for compatibility. */
-  recordAction(outcome: Outcome) {
-    const attemptId = generateAttemptId('direct');
-    sendBeaconReport('/api/metrics/attempt-start', { attemptId, action: 'direct' });
-    sendBeaconReport('/api/metrics/attempt-finish', { attemptId, outcome, timestamp: Date.now() });
   },
 
   /** Report client-observed WebSocket disconnect code (e.g. 1000, 1006, 1008) */

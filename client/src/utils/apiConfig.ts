@@ -1,25 +1,50 @@
 /**
  * Unified network endpoint configuration for Blokus Online.
- * Routes automatically through Vite dev reverse proxy (port 3000)
- * to avoid cross-origin CORS/firewall/port-blocking issues on mobile LAN connections.
+ * Uses same-origin by default behind Nginx (80/443/default) and Vite dev proxy (3000),
+ * supports explicit VITE_API_BASE overrides, and falls back to :3001 on unproxied static ports.
  */
 
+const SAME_ORIGIN_PORTS = new Set(['', '80', '443', '3000']);
+
+function getConfiguredBase(): string | null {
+  const raw =
+    typeof import.meta !== 'undefined'
+      ? (import.meta as unknown as { env?: Record<string, string | undefined> }).env?.VITE_API_BASE
+      : undefined;
+  const trimmed = raw?.trim();
+  return trimmed ? trimmed.replace(/\/+$/, '') : null;
+}
+
 export function getApiBase(): string {
-  if (typeof window !== 'undefined' && window.location.port === '3000') {
-    return ''; // Same-origin via Vite proxy
+  const configured = getConfiguredBase();
+  if (configured) {
+    return configured;
   }
-  const host = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
-  const protocol = typeof window !== 'undefined' ? window.location.protocol : 'http:';
-  return `${protocol}//${host}:3001`;
+  if (typeof window === 'undefined') {
+    return 'http://localhost:3001';
+  }
+  if (SAME_ORIGIN_PORTS.has(window.location.port)) {
+    return '';
+  }
+  return `${window.location.protocol}//${window.location.hostname}:3001`;
 }
 
 export function getWsUrl(): string {
+  const configured = getConfiguredBase();
+  if (configured) {
+    if (/^https?:\/\//i.test(configured)) {
+      return `${configured.replace(/^http/i, 'ws')}/ws`;
+    }
+    if (/^wss?:\/\//i.test(configured)) {
+      return `${configured}/ws`;
+    }
+  }
   if (typeof window === 'undefined') {
     return 'ws://localhost:3001/ws';
   }
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  if (window.location.port === '3000') {
-    return `${protocol}//${window.location.host}/ws`;
+  const wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  if (SAME_ORIGIN_PORTS.has(window.location.port)) {
+    return `${wsProto}//${window.location.host}/ws`;
   }
-  return `${protocol}//${window.location.hostname}:3001/ws`;
+  return `${wsProto}//${window.location.hostname}:3001/ws`;
 }

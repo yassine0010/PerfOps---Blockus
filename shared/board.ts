@@ -68,6 +68,29 @@ export function getShapeCells(matrix: number[][]): [number, number][] {
   return cells;
 }
 
+// Cache transformed relative [dx, dy] cells per shape matrix across the 8 (flip, rotation) variants.
+const shapeCellsCache = new WeakMap<number[][], ([number, number][] | undefined)[]>();
+
+function getRelativeShapeCells(baseShape: number[][], rotation: number, flip: boolean): [number, number][] {
+  const normalizedRot = ((rotation % 360) + 360) % 360;
+  const step = Math.floor(normalizedRot / 90) % 4;
+  const cacheIdx = (flip ? 4 : 0) + step;
+
+  let variants = shapeCellsCache.get(baseShape);
+  if (!variants) {
+    variants = new Array<[number, number][] | undefined>(8);
+    shapeCellsCache.set(baseShape, variants);
+  }
+
+  let cached = variants[cacheIdx];
+  if (!cached) {
+    const transformed = transformShape(baseShape, step * 90, flip);
+    cached = getShapeCells(transformed);
+    variants[cacheIdx] = cached;
+  }
+  return cached;
+}
+
 export function getPieceAbsoluteCoords(
   baseShape: number[][],
   rotation: number,
@@ -75,7 +98,20 @@ export function getPieceAbsoluteCoords(
   originX: number,
   originY: number
 ): [number, number][] {
-  const transformed = transformShape(baseShape, rotation, flip);
-  const relativeCells = getShapeCells(transformed);
-  return relativeCells.map(([dx, dy]) => [originX + dx, originY + dy]);
+  const relativeCells = getRelativeShapeCells(baseShape, rotation, flip);
+  const coords: [number, number][] = new Array(relativeCells.length);
+  for (let i = 0; i < relativeCells.length; i++) {
+    const [dx, dy] = relativeCells[i];
+    coords[i] = [originX + dx, originY + dy];
+  }
+  return coords;
+}
+
+/**
+ * Sanitizes user-supplied display text (player names, bot names, avatar seeds, chat messages)
+ * by stripping HTML tags, trimming whitespace, enforcing max length, and falling back if empty.
+ */
+export function sanitizeDisplayText(raw: unknown, maxLen: number, fallback: string): string {
+  const str = typeof raw === 'string' ? raw : '';
+  return str.trim().replace(/<[^>]*>/g, '').substring(0, Math.max(0, maxLen)).trim() || fallback;
 }

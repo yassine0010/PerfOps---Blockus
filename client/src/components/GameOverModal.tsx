@@ -1,45 +1,74 @@
 import React, { useEffect } from 'react';
 import confetti from 'canvas-confetti';
-import { Trophy, RotateCcw, Home } from 'lucide-react';
+import { Trophy, RotateCcw, Home, Users } from 'lucide-react';
 import { RoomState } from '../../../shared/index';
 
 interface GameOverModalProps {
   roomState: RoomState;
   myPlayerId: string;
+  isHost: boolean;
   onPlayAgain: () => void;
+  onReturnToLobby?: () => void;
   onExit: () => void;
 }
 
 export const GameOverModal: React.FC<GameOverModalProps> = ({
   roomState,
   myPlayerId,
+  isHost,
   onPlayAgain,
+  onReturnToLobby,
   onExit
 }) => {
-  const ranked = [...roomState.players]
-    .sort((a, b) => {
-      if (a.forfeited && !b.forfeited) return 1;
-      if (!a.forfeited && b.forfeited) return -1;
-      return a.squaresRemaining - b.squaresRemaining;
-    })
-    .map((player, idx) => ({
-      ...player,
-      rank: idx + 1,
-      isMe: player.id === myPlayerId
-    }));
+  const ranked = roomState.rankings && roomState.rankings.length > 0
+    ? roomState.rankings.map(r => ({
+        id: r.playerId,
+        name: r.name,
+        color: r.color,
+        squaresRemaining: r.squaresRemaining,
+        bonus: r.bonus || 0,
+        netScore: r.netScore ?? r.squaresRemaining,
+        forfeited: Boolean(r.forfeited),
+        rank: r.rank,
+        isMe: r.playerId === myPlayerId
+      }))
+    : [...roomState.players]
+        .sort((a, b) => {
+          if (a.forfeited && !b.forfeited) return 1;
+          if (!a.forfeited && b.forfeited) return -1;
+          return a.squaresRemaining - b.squaresRemaining;
+        })
+        .map((player, idx) => ({
+          id: player.id,
+          name: player.name,
+          color: player.color,
+          squaresRemaining: player.squaresRemaining,
+          bonus: 0,
+          netScore: player.squaresRemaining,
+          forfeited: Boolean(player.forfeited),
+          rank: idx + 1,
+          isMe: player.id === myPlayerId
+        }));
 
-  const winner = ranked.find(p => !p.forfeited) || ranked[0];
-  const amIWinner = winner && winner.isMe;
-  const didSomeoneForfeit = roomState.players.some(p => p.forfeited);
+  const winners = ranked.filter(p => p.rank === 1 && !p.forfeited);
+  const isTie = roomState.winner === 'TIE' || winners.length > 1;
+  const winner = winners[0] || ranked[0];
+  const amIWinner = winners.some(w => w.isMe);
+  const didSomeoneForfeit = ranked.some(p => p.forfeited);
+  const activeRemainingCount = roomState.players.filter(
+    p => !p.forfeited && (p.isConnected || Boolean(p.isBot))
+  ).length;
+  const hasEnoughPlayers = activeRemainingCount >= 2;
 
   useEffect(() => {
-    // Launch celebratory confetti
+    if (!amIWinner) return;
+    // Launch celebratory confetti only for winners
     confetti({
       particleCount: 80,
       spread: 70,
       origin: { y: 0.6 }
     });
-  }, []);
+  }, [amIWinner]);
 
   return (
     <div
@@ -84,10 +113,12 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
         </div>
 
         <h2 style={{ fontSize: '1.8rem', fontWeight: 900, marginBottom: 4 }}>
-          {amIWinner ? 'VICTORY!' : 'GAME OVER'}
+          {isTie ? "IT'S A TIE!" : amIWinner ? 'VICTORY!' : 'GAME OVER'}
         </h2>
         <p style={{ color: '#64748B', fontSize: '0.9rem', fontWeight: 600, marginBottom: 20 }}>
-          {didSomeoneForfeit && winner
+          {isTie
+            ? `Tied for 1st: ${winners.map(w => w.name).join(' & ')}`
+            : didSomeoneForfeit && winner
             ? `${winner.name} won by forfeit!`
             : winner
             ? `${winner.name} won the match!`
@@ -115,7 +146,7 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
                     width: 24,
                     height: 24,
                     borderRadius: '50%',
-                    background: item.rank === 1 ? '#F59E0B' : '#64748B',
+                    background: item.rank === 1 && !item.forfeited ? '#F59E0B' : '#64748B',
                     color: '#FFFFFF',
                     fontSize: '0.75rem',
                     fontWeight: 900,
@@ -141,7 +172,7 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
                 </span>
               </div>
 
-              <div style={{ fontSize: '0.85rem', fontWeight: 800, color: '#64748B' }}>
+              <div style={{ fontSize: '0.82rem', fontWeight: 800, color: '#64748B', display: 'flex', alignItems: 'center', gap: 6 }}>
                 {item.forfeited ? (
                   <span
                     style={{
@@ -156,7 +187,23 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
                     Forfeited
                   </span>
                 ) : (
-                  `${item.squaresRemaining} pts remaining`
+                  <>
+                    {item.bonus > 0 && (
+                      <span
+                        style={{
+                          background: '#DCFCE7',
+                          color: '#15803D',
+                          fontSize: '0.68rem',
+                          fontWeight: 900,
+                          padding: '2px 7px',
+                          borderRadius: 99
+                        }}
+                      >
+                        +{item.bonus} BONUS
+                      </span>
+                    )}
+                    <span>{item.squaresRemaining} left</span>
+                  </>
                 )}
               </div>
             </div>
@@ -165,13 +212,26 @@ export const GameOverModal: React.FC<GameOverModalProps> = ({
 
         {/* Buttons */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          <button onClick={onPlayAgain} className="btn-coral" style={{ width: '100%' }}>
+          <button
+            onClick={onPlayAgain}
+            disabled={!isHost || !hasEnoughPlayers}
+            className="btn-coral"
+            style={{ width: '100%' }}
+          >
             <RotateCcw size={18} />
-            PLAY AGAIN
+            {!hasEnoughPlayers ? 'NEED 2+ PLAYERS' : isHost ? 'PLAY AGAIN' : 'WAITING FOR HOST...'}
           </button>
+
+          {isHost && onReturnToLobby && (
+            <button onClick={onReturnToLobby} className="btn-secondary" style={{ width: '100%' }}>
+              <Users size={18} />
+              BACK TO LOBBY
+            </button>
+          )}
+
           <button onClick={onExit} className="btn-secondary" style={{ width: '100%' }}>
             <Home size={18} />
-            BACK TO LOBBY
+            MAIN MENU
           </button>
         </div>
       </div>

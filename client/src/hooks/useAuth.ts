@@ -13,10 +13,18 @@ export interface AuthUser {
     gamesWon: number;
     gamesLost: number;
     totalSquaresPlaced: number;
-    bestScore: number;
+    bestScore: number | null;
     winStreak: number;
     currentStreak: number;
   };
+}
+
+async function parseJsonSafe(res: Response): Promise<Record<string, any> | null> {
+  try {
+    return await res.json();
+  } catch {
+    return null;
+  }
 }
 
 export function useAuth() {
@@ -30,81 +38,90 @@ export function useAuth() {
       setLoading(false);
       return;
     }
+    let cancelled = false;
     fetch(`${getApiBase()}/api/me`, {
       headers: { Authorization: `Bearer ${token}` }
     })
-      .then(r => r.json())
-      .then(data => {
-        if (data.user) {
-          setUser(data.user);
-        } else {
+      .then(async (res) => {
+        if (res.status === 401) {
           localStorage.removeItem('blokus_auth_token');
-          setToken(null);
+          if (!cancelled) {
+            setToken(null);
+            setUser(null);
+          }
+          return;
+        }
+        if (!res.ok) {
+          return;
+        }
+        const data = await parseJsonSafe(res);
+        if (!cancelled && data?.user) {
+          setUser(data.user);
         }
       })
       .catch(() => {
-        // Server unreachable, keep token but clear user until retry
+        // Server unreachable, keep token until retry
       })
-      .finally(() => setLoading(false));
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
-  const login = useCallback(async (username: string, password: string): Promise<{ success: boolean; error?: string }> => {
-    const finishAttempt = joinMetrics.startAction('login');
+  const submitAuthRequest = useCallback(async (
+    action: 'login' | 'register',
+    endpoint: string,
+    payload: Record<string, unknown>,
+    fallbackError: string
+  ): Promise<{ success: boolean; error?: string }> => {
+    const finishAttempt = joinMetrics.startAction(action);
     try {
-      const res = await fetch(`${getApiBase()}/api/login`, {
+      const res = await fetch(`${getApiBase()}${endpoint}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password })
+        body: JSON.stringify(payload)
       });
       if (res.status >= 500) {
         finishAttempt('failure');
         return { success: false, error: 'Server error. Please try again.' };
       }
-      const data = await res.json();
-      if (data.success && data.token && data.user) {
+      const data = await parseJsonSafe(res);
+      if (!res.ok && res.status < 500) {
+        // User typos, bad credentials, or validation errors are excluded from availability metrics
+        finishAttempt('excluded');
+        return {
+          success: false,
+          error: (typeof data?.error === 'string' && data.error) || fallbackError
+        };
+      }
+      if (data?.success && data.token && data.user) {
         finishAttempt('success');
         setToken(data.token);
         setUser(data.user);
         localStorage.setItem('blokus_auth_token', data.token);
         return { success: true };
       }
-      // User typos or bad credentials are excluded from app availability metrics
       finishAttempt('excluded');
-      return { success: false, error: data.error || 'Login failed' };
+      return {
+        success: false,
+        error: (typeof data?.error === 'string' && data.error) || fallbackError
+      };
     } catch {
       finishAttempt('failure');
       return { success: false, error: 'Could not reach the server' };
     }
   }, []);
 
-  const register = useCallback(async (username: string, password: string, displayName?: string): Promise<{ success: boolean; error?: string }> => {
-    const finishAttempt = joinMetrics.startAction('register');
-    try {
-      const res = await fetch(`${getApiBase()}/api/register`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username, password, displayName })
-      });
-      if (res.status >= 500) {
-        finishAttempt('failure');
-        return { success: false, error: 'Server error. Please try again.' };
-      }
-      const data = await res.json();
-      if (data.success && data.token && data.user) {
-        finishAttempt('success');
-        setToken(data.token);
-        setUser(data.user);
-        localStorage.setItem('blokus_auth_token', data.token);
-        return { success: true };
-      }
-      // User validation errors (username taken, etc.) are excluded from availability metrics
-      finishAttempt('excluded');
-      return { success: false, error: data.error || 'Registration failed' };
-    } catch {
-      finishAttempt('failure');
-      return { success: false, error: 'Could not reach the server' };
-    }
-  }, []);
+  const login = useCallback((username: string, password: string) => {
+    return submitAuthRequest('login', '/api/login', { username, password }, 'Login failed');
+  }, [submitAuthRequest]);
+
+  const register = useCallback((username: string, password: string, displayName?: string) => {
+    return submitAuthRequest('register', '/api/register', { username, password, displayName }, 'Registration failed');
+  }, [submitAuthRequest]);
 
   const logout = useCallback(() => {
     if (token) {
@@ -124,8 +141,15 @@ export function useAuth() {
       const res = await fetch(`${getApiBase()}/api/me`, {
         headers: { Authorization: `Bearer ${token}` }
       });
-      const data = await res.json();
-      if (data.user) setUser(data.user);
+      if (res.status === 401) {
+        localStorage.removeItem('blokus_auth_token');
+        setToken(null);
+        setUser(null);
+        return;
+      }
+      if (!res.ok) return;
+      const data = await parseJsonSafe(res);
+      if (data?.user) setUser(data.user);
     } catch {}
   }, [token]);
 

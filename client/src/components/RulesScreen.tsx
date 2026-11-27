@@ -938,6 +938,54 @@ export const RulesScreen: React.FC<RulesScreenProps> = ({
           </div>
         </div>
       </div>
+
+      {/* Official Blokus Bonuses */}
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+          gap: 10,
+          marginTop: 4
+        }}
+      >
+        <div
+          style={{
+            background: '#F0FDF4',
+            border: '1.5px solid #BBF7D0',
+            borderRadius: 14,
+            padding: '10px 14px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 10
+          }}
+        >
+          <span style={{ background: '#16A34A', color: '#FFFFFF', fontWeight: 900, fontSize: '0.78rem', padding: '4px 9px', borderRadius: 99 }}>
+            +15
+          </span>
+          <div style={{ fontSize: '0.8rem', color: '#166534', fontWeight: 700, lineHeight: 1.3 }}>
+            <strong>All Pieces Placed:</strong> Empty your tray (0 left) for a -15 net score bonus.
+          </div>
+        </div>
+
+        <div
+          style={{
+            background: '#EFF6FF',
+            border: '1.5px solid #BFDBFE',
+            borderRadius: 14,
+            padding: '10px 14px',
+            display: 'flex',
+            alignItems: 'center',
+            gap: 10
+          }}
+        >
+          <span style={{ background: '#2563EB', color: '#FFFFFF', fontWeight: 900, fontSize: '0.78rem', padding: '4px 9px', borderRadius: 99 }}>
+            +20
+          </span>
+          <div style={{ fontSize: '0.8rem', color: '#1E40AF', fontWeight: 700, lineHeight: 1.3 }}>
+            <strong>Monomino Last:</strong> Place your 1-square last when clearing all pieces for a -20 bonus!
+          </div>
+        </div>
+      </div>
     </div>
   );
 
@@ -959,27 +1007,27 @@ export const RulesScreen: React.FC<RulesScreenProps> = ({
         gap: 16
       }}
     >
-      {/* 4 Starting Corners */}
+      {/* 4 Starting Corners (matching shared/board.ts & Slide 2) */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8, textAlign: 'center' }}>
         <div style={{ background: '#EFF6FF', border: '1.5px solid #BFDBFE', padding: '12px 6px', borderRadius: 14 }}>
           <div style={{ width: 16, height: 16, borderRadius: '50%', background: '#3E82F7', margin: '0 auto 6px auto', boxShadow: '0 2px 6px rgba(62, 130, 247, 0.4)' }} />
           <div style={{ fontSize: '0.85rem', fontWeight: 900, color: '#1E40AF' }}>Blue</div>
-          <div style={{ fontSize: '0.7rem', color: '#64748B', fontWeight: 700, marginTop: 2 }}>Top-Left (1st)</div>
+          <div style={{ fontSize: '0.7rem', color: '#64748B', fontWeight: 700, marginTop: 2 }}>Bottom-Left (1st)</div>
         </div>
         <div style={{ background: '#FEFCE8', border: '1.5px solid #FEF08A', padding: '12px 6px', borderRadius: 14 }}>
           <div style={{ width: 16, height: 16, borderRadius: '50%', background: '#EAB308', margin: '0 auto 6px auto', boxShadow: '0 2px 6px rgba(234, 179, 8, 0.4)' }} />
           <div style={{ fontSize: '0.85rem', fontWeight: 900, color: '#854D0E' }}>Yellow</div>
-          <div style={{ fontSize: '0.7rem', color: '#64748B', fontWeight: 700, marginTop: 2 }}>Top-Right (2nd)</div>
+          <div style={{ fontSize: '0.7rem', color: '#64748B', fontWeight: 700, marginTop: 2 }}>Top-Left (2nd)</div>
         </div>
         <div style={{ background: '#FEF2F2', border: '1.5px solid #FECACA', padding: '12px 6px', borderRadius: 14 }}>
           <div style={{ width: 16, height: 16, borderRadius: '50%', background: '#EF4444', margin: '0 auto 6px auto', boxShadow: '0 2px 6px rgba(239, 68, 68, 0.4)' }} />
           <div style={{ fontSize: '0.85rem', fontWeight: 900, color: '#991B1B' }}>Red</div>
-          <div style={{ fontSize: '0.7rem', color: '#64748B', fontWeight: 700, marginTop: 2 }}>Bottom-Right (3rd)</div>
+          <div style={{ fontSize: '0.7rem', color: '#64748B', fontWeight: 700, marginTop: 2 }}>Top-Right (3rd)</div>
         </div>
         <div style={{ background: '#F0FDF4', border: '1.5px solid #BBF7D0', padding: '12px 6px', borderRadius: 14 }}>
           <div style={{ width: 16, height: 16, borderRadius: '50%', background: '#22C55E', margin: '0 auto 6px auto', boxShadow: '0 2px 6px rgba(34, 197, 94, 0.4)' }} />
           <div style={{ fontSize: '0.85rem', fontWeight: 900, color: '#166534' }}>Green</div>
-          <div style={{ fontSize: '0.7rem', color: '#64748B', fontWeight: 700, marginTop: 2 }}>Bottom-Left (4th)</div>
+          <div style={{ fontSize: '0.7rem', color: '#64748B', fontWeight: 700, marginTop: 2 }}>Bottom-Right (4th)</div>
         </div>
       </div>
 
@@ -1148,7 +1196,7 @@ export const RulesScreen: React.FC<RulesScreenProps> = ({
       step: '05',
       category: 'SCORING',
       title: 'Lowest Squares Wins',
-      description: 'Count unplaced squares at game end. Lowest score wins.',
+      description: 'Count unplaced squares at game end · +15 bonus for clearing all pieces (+20 if 1-square is last).',
       renderContent: renderSlide5
     },
     {

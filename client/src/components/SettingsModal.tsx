@@ -1,5 +1,5 @@
 import React from 'react';
-import { X, Check, Search, Volume2, Sliders, MousePointer, Hand } from 'lucide-react';
+import { X, Check, Search, Volume2, Sliders, MousePointer } from 'lucide-react';
 import { PlacementMode } from '../../../shared/index.ts';
 
 interface SettingsModalProps {

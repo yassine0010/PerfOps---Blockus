@@ -260,97 +260,79 @@ var PIECES = {
 var ALL_PIECE_IDS = Object.keys(PIECES);
 
 // shared/validator.ts
-function isValidPlacement(board, coords, color, isFirstMove) {
-  if (coords.length === 0) {
-    return { valid: false, reason: "Empty piece coordinates" };
-  }
-  for (const [x, y] of coords) {
-    if (x < 0 || x >= BOARD_SIZE || y < 0 || y >= BOARD_SIZE) {
-      return { valid: false, reason: `Cell (${x}, ${y}) is out of bounds` };
-    }
-  }
-  for (const [x, y] of coords) {
-    if (board[y][x] !== null) {
-      return { valid: false, reason: `Cell (${x}, ${y}) is already occupied` };
-    }
-  }
-  if (isFirstMove) {
-    const [startX, startY] = STARTING_CORNERS[color];
-    const touchesStart = coords.some(([x, y]) => x === startX && y === startY);
-    if (!touchesStart) {
-      return {
-        valid: false,
-        reason: `First move must cover your starting corner (${startX}, ${startY})`
-      };
-    }
-    return { valid: true };
-  }
-  const orthogonalOffsets = [
-    [0, -1],
-    [0, 1],
-    [-1, 0],
-    [1, 0]
-  ];
-  for (const [x, y] of coords) {
-    for (const [dx, dy] of orthogonalOffsets) {
-      const nx = x + dx;
-      const ny = y + dy;
-      if (nx >= 0 && nx < BOARD_SIZE && ny >= 0 && ny < BOARD_SIZE) {
-        if (board[ny][nx] === color) {
-          return {
-            valid: false,
-            reason: `Pieces cannot touch existing ${color} pieces along edges`
-          };
-        }
-      }
-    }
-  }
-  const diagonalOffsets = [
-    [-1, -1],
-    [1, -1],
-    [-1, 1],
-    [1, 1]
-  ];
-  let touchesFriendlyCorner = false;
-  for (const [x, y] of coords) {
-    for (const [dx, dy] of diagonalOffsets) {
-      const nx = x + dx;
-      const ny = y + dy;
-      if (nx >= 0 && nx < BOARD_SIZE && ny >= 0 && ny < BOARD_SIZE) {
-        if (board[ny][nx] === color) {
-          touchesFriendlyCorner = true;
-          break;
-        }
-      }
-    }
-    if (touchesFriendlyCorner) break;
-  }
-  if (!touchesFriendlyCorner) {
-    return {
-      valid: false,
-      reason: `Move must connect corner-to-corner with at least one existing ${color} piece`
-    };
-  }
-  return { valid: true };
-}
-function findFirstLegalMove(board, remainingPieces, color, isFirstMove) {
+var UNIQUE_ORIENTATIONS = (() => {
+  const map = /* @__PURE__ */ new Map();
   const rotations = [0, 90, 180, 270];
   const flips = [false, true];
+  for (const pieceId of Object.keys(PIECES)) {
+    const piece = PIECES[pieceId];
+    const seenSignatures = /* @__PURE__ */ new Set();
+    const list = [];
+    for (const flip of flips) {
+      for (const rot of rotations) {
+        const transformed = transformShape(piece.shape, rot, flip);
+        const cells = getShapeCells(transformed);
+        const signature = cells.map(([dx, dy]) => `${dx},${dy}`).join(";");
+        if (seenSignatures.has(signature)) continue;
+        seenSignatures.add(signature);
+        let minDx = BOARD_SIZE, minDy = BOARD_SIZE, maxDx = 0, maxDy = 0;
+        for (const [dx, dy] of cells) {
+          if (dx < minDx) minDx = dx;
+          if (dy < minDy) minDy = dy;
+          if (dx > maxDx) maxDx = dx;
+          if (dy > maxDy) maxDy = dy;
+        }
+        list.push({ rotation: rot, flip, cells, minDx, minDy, maxDx, maxDy });
+      }
+    }
+    map.set(pieceId, list);
+  }
+  return map;
+})();
+var SCRATCH_FORBIDDEN = new Uint8Array(BOARD_SIZE * BOARD_SIZE);
+var SCRATCH_SEEN = new Uint8Array(BOARD_SIZE * BOARD_SIZE);
+var SCRATCH_TESTED = new Uint8Array(BOARD_SIZE * BOARD_SIZE);
+var DIAGONAL_OFFSETS = [[-1, -1], [1, -1], [-1, 1], [1, 1]];
+function findLegalMoveInternal(board, remainingPieces, color, isFirstMove, preferLargest) {
+  if (remainingPieces.length === 0) return null;
+  const forbidden = SCRATCH_FORBIDDEN;
+  forbidden.fill(0);
+  for (let y = 0; y < BOARD_SIZE; y++) {
+    const row = board[y];
+    const rowOffset = y * BOARD_SIZE;
+    for (let x = 0; x < BOARD_SIZE; x++) {
+      const cell = row[x];
+      if (cell !== null) {
+        forbidden[rowOffset + x] = 1;
+        if (!isFirstMove && cell === color) {
+          if (x > 0) forbidden[rowOffset + x - 1] = 1;
+          if (x + 1 < BOARD_SIZE) forbidden[rowOffset + x + 1] = 1;
+          if (y > 0) forbidden[rowOffset - BOARD_SIZE + x] = 1;
+          if (y + 1 < BOARD_SIZE) forbidden[rowOffset + BOARD_SIZE + x] = 1;
+        }
+      }
+    }
+  }
   let candidateTargets = null;
-  if (!isFirstMove) {
+  if (isFirstMove) {
+    const [cornerX, cornerY] = STARTING_CORNERS[color];
+    if (forbidden[cornerY * BOARD_SIZE + cornerX]) return null;
+    candidateTargets = [[cornerX, cornerY]];
+  } else {
     candidateTargets = [];
-    const seen = /* @__PURE__ */ new Set();
-    const diags = [[-1, -1], [1, -1], [-1, 1], [1, 1]];
+    const seen = SCRATCH_SEEN;
+    seen.fill(0);
     for (let y = 0; y < BOARD_SIZE; y++) {
+      const row = board[y];
       for (let x = 0; x < BOARD_SIZE; x++) {
-        if (board[y][x] === color) {
-          for (const [dx, dy] of diags) {
+        if (row[x] === color) {
+          for (const [dx, dy] of DIAGONAL_OFFSETS) {
             const nx = x + dx;
             const ny = y + dy;
-            if (nx >= 0 && nx < BOARD_SIZE && ny >= 0 && ny < BOARD_SIZE && board[ny][nx] === null) {
+            if (nx >= 0 && nx < BOARD_SIZE && ny >= 0 && ny < BOARD_SIZE) {
               const key = ny * BOARD_SIZE + nx;
-              if (!seen.has(key)) {
-                seen.add(key);
+              if (!seen[key] && !forbidden[key]) {
+                seen[key] = 1;
                 candidateTargets.push([nx, ny]);
               }
             }
@@ -360,55 +342,46 @@ function findFirstLegalMove(board, remainingPieces, color, isFirstMove) {
     }
     if (candidateTargets.length === 0) return null;
   }
-  const startCorner = isFirstMove ? STARTING_CORNERS[color] : null;
-  for (const pieceId of remainingPieces) {
-    const piece = PIECES[pieceId];
-    if (!piece) continue;
-    for (const flip of flips) {
-      for (const rot of rotations) {
-        const transformed = transformShape(piece.shape, rot, flip);
-        const shapeCells = getShapeCells(transformed);
-        let maxDx = 0, maxDy = 0;
-        for (const [dx, dy] of shapeCells) {
-          if (dx > maxDx) maxDx = dx;
-          if (dy > maxDy) maxDy = dy;
-        }
-        const limitX = BOARD_SIZE - maxDx;
-        const limitY = BOARD_SIZE - maxDy;
-        if (startCorner) {
-          const [cornerX, cornerY] = startCorner;
-          for (const [dx, dy] of shapeCells) {
-            const ox = cornerX - dx;
-            const oy = cornerY - dy;
-            if (ox < 0 || ox >= limitX || oy < 0 || oy >= limitY) continue;
-            const coords = shapeCells.map(([ddx, ddy]) => [ox + ddx, oy + ddy]);
-            const res = isValidPlacement(board, coords, color, true);
-            if (res.valid) {
-              return { pieceId, rotation: rot, flip, originX: ox, originY: oy, coords };
+  const orderedPieces = preferLargest ? [...remainingPieces].sort((a, b) => (PIECES[b]?.size || 0) - (PIECES[a]?.size || 0)) : remainingPieces;
+  const tested = SCRATCH_TESTED;
+  for (const pieceId of orderedPieces) {
+    const orientations = UNIQUE_ORIENTATIONS.get(pieceId);
+    if (!orientations) continue;
+    for (const orient of orientations) {
+      const { rotation, flip, cells, minDx, minDy, maxDx, maxDy } = orient;
+      const minOx = -minDx;
+      const minOy = -minDy;
+      const limitX = BOARD_SIZE - maxDx;
+      const limitY = BOARD_SIZE - maxDy;
+      tested.fill(0);
+      for (const [tx, ty] of candidateTargets) {
+        for (const [dx, dy] of cells) {
+          const ox = tx - dx;
+          const oy = ty - dy;
+          if (ox < minOx || ox >= limitX || oy < minOy || oy >= limitY) continue;
+          const originKey = oy * BOARD_SIZE + ox;
+          if (tested[originKey]) continue;
+          tested[originKey] = 1;
+          let blocked = false;
+          for (let i = 0; i < cells.length; i++) {
+            const [cx, cy] = cells[i];
+            if (forbidden[(oy + cy) * BOARD_SIZE + (ox + cx)]) {
+              blocked = true;
+              break;
             }
           }
-        } else if (candidateTargets) {
-          const tested = /* @__PURE__ */ new Set();
-          for (const [tx, ty] of candidateTargets) {
-            for (const [dx, dy] of shapeCells) {
-              const ox = tx - dx;
-              const oy = ty - dy;
-              if (ox < 0 || ox >= limitX || oy < 0 || oy >= limitY) continue;
-              const key = oy * BOARD_SIZE + ox;
-              if (tested.has(key)) continue;
-              tested.add(key);
-              const coords = shapeCells.map(([ddx, ddy]) => [ox + ddx, oy + ddy]);
-              const res = isValidPlacement(board, coords, color, false);
-              if (res.valid) {
-                return { pieceId, rotation: rot, flip, originX: ox, originY: oy, coords };
-              }
-            }
+          if (!blocked) {
+            const coords = cells.map(([cx, cy]) => [ox + cx, oy + cy]);
+            return { pieceId, rotation, flip, originX: ox, originY: oy, coords };
           }
         }
       }
     }
   }
   return null;
+}
+function findFirstLegalMove(board, remainingPieces, color, isFirstMove) {
+  return findLegalMoveInternal(board, remainingPieces, color, isFirstMove, false);
 }
 
 // load-test/k6/k6-blokus-workload.ts
@@ -564,7 +537,7 @@ function k6_blokus_workload_default() {
         }));
       } else {
         passesTotal.add(1);
-        sleep(0.5);
+        sleep(Math.max(0.5, 1.05 - thinkDelaySec));
         sock.send(JSON.stringify({ type: "PASS_TURN", roomId }));
       }
     } finally {

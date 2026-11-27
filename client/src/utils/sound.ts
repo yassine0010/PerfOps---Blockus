@@ -1,12 +1,22 @@
 // Robust Web Audio API sound generator with auto-resume on user gestures
 class SoundEffects {
   private ctx: AudioContext | null = null;
+  private removeUnlockListeners: (() => void) | null = null;
   public enabled: boolean = true;
 
   constructor() {
     if (typeof window !== 'undefined') {
       const unlockAudio = () => {
-        this.getOrCreateCtx();
+        if (!this.enabled) return;
+        const ctx = this.getOrCreateCtx();
+        if (ctx?.state === 'running') {
+          this.removeUnlockListeners?.();
+        }
+      };
+      this.removeUnlockListeners = () => {
+        window.removeEventListener('pointerdown', unlockAudio);
+        window.removeEventListener('touchstart', unlockAudio);
+        this.removeUnlockListeners = null;
       };
       window.addEventListener('pointerdown', unlockAudio, { passive: true });
       window.addEventListener('touchstart', unlockAudio, { passive: true });
@@ -24,7 +34,15 @@ class SoundEffects {
     }
 
     if (this.ctx && this.ctx.state === 'suspended') {
-      this.ctx.resume().catch(() => {});
+      this.ctx.resume()
+        .then(() => {
+          if (this.ctx?.state === 'running') {
+            this.removeUnlockListeners?.();
+          }
+        })
+        .catch(() => {});
+    } else if (this.ctx?.state === 'running') {
+      this.removeUnlockListeners?.();
     }
 
     return this.ctx;

@@ -14,17 +14,16 @@ import {
   X,
   Sparkles
 } from 'lucide-react';
-import { PlayerColor, RoomState } from '../../../shared/types.ts';
+import { RoomState } from '../../../shared/types.ts';
 import { RulesScreen } from './RulesScreen';
 
 interface LobbyScreenProps {
   roomState: RoomState;
   myPlayerId: string;
   onStartGame: () => void;
-  onToggleReady: () => void;
-  onChangeColor: (color: PlayerColor) => void;
   onAddBot?: (botName?: string) => void;
   onRemoveBot?: (botId: string) => void;
+  onKickPlayer?: (playerId: string) => void;
   onLeaveRoom: () => void;
 }
 
@@ -43,6 +42,7 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
   onStartGame,
   onAddBot,
   onRemoveBot,
+  onKickPlayer,
   onLeaveRoom
 }) => {
   const me = roomState.players.find(p => p.id === myPlayerId);
@@ -67,10 +67,41 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
     return <RulesScreen onBack={() => setShowRules(false)} initialMode={rulesMode} />;
   }
 
-  const handleShare = () => {
-    navigator.clipboard.writeText(roomState.roomId);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2500);
+  const copyWithFallback = (text: string): boolean => {
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.setAttribute('readonly', '');
+    textarea.style.position = 'fixed';
+    textarea.style.left = '-9999px';
+    document.body.appendChild(textarea);
+    textarea.select();
+    let ok = false;
+    try {
+      ok = document.execCommand('copy');
+    } catch {
+      ok = false;
+    }
+    document.body.removeChild(textarea);
+    return ok;
+  };
+
+  const handleShare = async () => {
+    let didCopy = false;
+    try {
+      if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(roomState.roomId);
+        didCopy = true;
+      } else {
+        didCopy = copyWithFallback(roomState.roomId);
+      }
+    } catch {
+      didCopy = copyWithFallback(roomState.roomId);
+    }
+
+    if (didCopy) {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2500);
+    }
   };
 
   const handleOpenAddBot = () => {
@@ -424,18 +455,42 @@ export const LobbyScreen: React.FC<LobbyScreenProps> = ({
 
                   <div>
                     {isOffline ? (
-                      <div
-                        title="Player is disconnected"
-                        style={{
-                          display: 'flex',
-                          alignItems: 'center',
-                          gap: 4,
-                          background: '#FEE2E2',
-                          padding: '4px 8px',
-                          borderRadius: 8
-                        }}
-                      >
-                        <WifiOff size={16} color="#DC2626" strokeWidth={2.5} />
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <div
+                          title="Player is disconnected"
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 4,
+                            background: '#FEE2E2',
+                            padding: '4px 8px',
+                            borderRadius: 8
+                          }}
+                        >
+                          <WifiOff size={16} color="#DC2626" strokeWidth={2.5} />
+                        </div>
+                        {isHost && !isCurrentMe && onKickPlayer && (
+                          <button
+                            type="button"
+                            onClick={() => onKickPlayer(player.id)}
+                            title={`Remove disconnected player ${player.name}`}
+                            style={{
+                              background: '#FEE2E2',
+                              border: 'none',
+                              width: 32,
+                              height: 32,
+                              borderRadius: 8,
+                              display: 'flex',
+                              alignItems: 'center',
+                              justifyContent: 'center',
+                              cursor: 'pointer',
+                              color: '#DC2626',
+                              transition: 'all 0.15s ease'
+                            }}
+                          >
+                            <Trash2 size={16} />
+                          </button>
+                        )}
                       </div>
                     ) : isBot && isHost ? (
                       <button

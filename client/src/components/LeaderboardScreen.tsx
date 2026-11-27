@@ -12,7 +12,7 @@ interface LeaderboardEntry {
     gamesWon: number;
     gamesLost: number;
     totalSquaresPlaced: number;
-    bestScore: number;
+    bestScore: number | null;
     winStreak: number;
     currentStreak: number;
   };
@@ -27,35 +27,56 @@ export const LeaderboardScreen: React.FC<LeaderboardScreenProps> = ({ myUserId }
   const [entries, setEntries] = useState<LeaderboardEntry[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
+  const [reloadTick, setReloadTick] = useState<number>(0);
 
-  const fetchLeaderboard = () => {
+  const fetchLeaderboard = () => setReloadTick(t => t + 1);
+
+  useEffect(() => {
+    const controller = new AbortController();
     setLoading(true);
     setError(null);
     const finishAttempt = joinMetrics.startAction('leaderboard');
-    fetch(`${getApiBase()}/api/leaderboard`)
+    let settled = false;
+    const completeAttempt = (outcome: 'success' | 'failure' | 'excluded') => {
+      if (settled) return;
+      settled = true;
+      finishAttempt(outcome);
+    };
+
+    fetch(`${getApiBase()}/api/leaderboard`, { signal: controller.signal })
       .then(r => {
         if (r.status >= 500) throw new Error('Server error');
         if (!r.ok) {
-          finishAttempt('excluded');
+          completeAttempt('excluded');
           return null;
         }
         return r.json();
       })
       .then(data => {
-        if (!data) return;
-        finishAttempt('success');
+        if (!data || controller.signal.aborted) {
+          if (controller.signal.aborted) completeAttempt('excluded');
+          return;
+        }
+        completeAttempt('success');
         setEntries(data.players || []);
       })
-      .catch(() => {
-        finishAttempt('failure');
+      .catch((err) => {
+        if (err?.name === 'AbortError' || controller.signal.aborted) {
+          completeAttempt('excluded');
+          return;
+        }
+        completeAttempt('failure');
         setError('Could not load leaderboard');
       })
-      .finally(() => setLoading(false));
-  };
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false);
+      });
 
-  useEffect(() => {
-    fetchLeaderboard();
-  }, []);
+    return () => {
+      controller.abort();
+      completeAttempt('excluded');
+    };
+  }, [reloadTick]);
 
   const getRankStyle = (rank: number): React.CSSProperties => {
     if (rank === 1) return { background: 'linear-gradient(135deg, #FCD34D 0%, #F59E0B 100%)', color: '#78350F' };
@@ -206,7 +227,7 @@ export const LeaderboardScreen: React.FC<LeaderboardScreenProps> = ({ myUserId }
                       width: 38,
                       height: 38,
                       borderRadius: '50%',
-                      background: `hsl(${(entry.displayName.charCodeAt(0) * 47) % 360}, 60%, 55%)`,
+                      background: `hsl(${(((entry.displayName || 'P').charCodeAt(0) || 65) * 47) % 360}, 60%, 55%)`,
                       color: '#FFFFFF',
                       display: 'flex',
                       alignItems: 'center',
@@ -217,14 +238,14 @@ export const LeaderboardScreen: React.FC<LeaderboardScreenProps> = ({ myUserId }
                       boxShadow: '0 2px 6px rgba(0,0,0,0.1)'
                     }}
                   >
-                    {entry.displayName.charAt(0).toUpperCase()}
+                    {(entry.displayName || '?').charAt(0).toUpperCase()}
                   </div>
 
                   {/* Info */}
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
                       <span style={{ fontWeight: 800, fontSize: '0.92rem', color: '#1E293B', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                        {entry.displayName}
+                        {entry.displayName || 'Player'}
                       </span>
                       {isMe && (
                         <span

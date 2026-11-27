@@ -319,42 +319,81 @@ const ProfileView: React.FC<{
   user: AuthUser;
   onLogout: () => void;
 }> = ({ user, onLogout }) => {
+  const [profileUser, setProfileUser] = useState<AuthUser>(user);
   const [recentGames, setRecentGames] = useState<GameRecord[]>([]);
   const [loadingGames, setLoadingGames] = useState(true);
+  const [profileError, setProfileError] = useState<string | null>(null);
+  const [reloadTick, setReloadTick] = useState(0);
 
   useEffect(() => {
+    setProfileUser(user);
+  }, [user]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setLoadingGames(true);
+    setProfileError(null);
     const finishAttempt = joinMetrics.startAction('profile');
-    fetch(`${getApiBase()}/api/profile/${user.id}`)
+    let settled = false;
+    const completeAttempt = (outcome: 'success' | 'failure' | 'excluded') => {
+      if (settled) return;
+      settled = true;
+      finishAttempt(outcome);
+    };
+
+    fetch(`${getApiBase()}/api/profile/${user.id}`, { signal: controller.signal })
       .then(r => {
         if (r.status >= 500) throw new Error('Server error');
         if (r.status === 404 || !r.ok) {
-          finishAttempt('excluded');
+          completeAttempt('excluded');
+          setProfileError('Could not load match history');
           return null;
         }
         return r.json();
       })
       .then(data => {
-        if (!data) return;
-        finishAttempt('success');
+        if (!data || controller.signal.aborted) {
+          if (controller.signal.aborted) completeAttempt('excluded');
+          return;
+        }
+        completeAttempt('success');
+        if (data.user) setProfileUser(data.user);
         if (data.recentGames) setRecentGames(data.recentGames);
       })
-      .catch(() => {
-        finishAttempt('failure');
+      .catch((err) => {
+        if (err?.name === 'AbortError' || controller.signal.aborted) {
+          completeAttempt('excluded');
+          return;
+        }
+        completeAttempt('failure');
+        setProfileError('Could not reach the server to load profile history');
       })
-      .finally(() => setLoadingGames(false));
-  }, [user.id]);
+      .finally(() => {
+        if (!controller.signal.aborted) setLoadingGames(false);
+      });
 
-  const winRate = user.stats.gamesPlayed > 0
-    ? Math.round((user.stats.gamesWon / user.stats.gamesPlayed) * 100)
+    return () => {
+      controller.abort();
+      completeAttempt('excluded');
+    };
+  }, [user.id, reloadTick]);
+
+  const activeUser = profileUser || user;
+  const safeDisplayName = activeUser.displayName?.trim() || activeUser.username || 'Player';
+  const winRate = activeUser.stats.gamesPlayed > 0
+    ? Math.round((activeUser.stats.gamesWon / activeUser.stats.gamesPlayed) * 100)
     : 0;
+  const bestScoreDisplay = activeUser.stats.bestScore === null || activeUser.stats.bestScore === -1
+    ? '—'
+    : activeUser.stats.bestScore;
 
   const statCards: { icon: React.ReactNode; label: string; value: string | number; color: string; bg: string }[] = [
-    { icon: <Gamepad2 size={18} />, label: 'Played', value: user.stats.gamesPlayed, color: '#3B82F6', bg: '#EFF6FF' },
-    { icon: <Trophy size={18} />, label: 'Wins', value: user.stats.gamesWon, color: '#F59E0B', bg: '#FFFBEB' },
+    { icon: <Gamepad2 size={18} />, label: 'Played', value: activeUser.stats.gamesPlayed, color: '#3B82F6', bg: '#EFF6FF' },
+    { icon: <Trophy size={18} />, label: 'Wins', value: activeUser.stats.gamesWon, color: '#F59E0B', bg: '#FFFBEB' },
     { icon: <TrendingUp size={18} />, label: 'Win Rate', value: `${winRate}%`, color: '#22C55E', bg: '#F0FDF4' },
-    { icon: <Target size={18} />, label: 'Best', value: user.stats.bestScore === -1 ? '—' : user.stats.bestScore, color: '#8B5CF6', bg: '#F5F3FF' },
-    { icon: <Flame size={18} />, label: 'Streak', value: user.stats.winStreak, color: '#EF4444', bg: '#FEF2F2' },
-    { icon: <BarChart3 size={18} />, label: 'Placed', value: user.stats.totalSquaresPlaced, color: '#06B6D4', bg: '#ECFEFF' },
+    { icon: <Target size={18} />, label: 'Best', value: bestScoreDisplay, color: '#8B5CF6', bg: '#F5F3FF' },
+    { icon: <Flame size={18} />, label: 'Streak', value: activeUser.stats.winStreak, color: '#EF4444', bg: '#FEF2F2' },
+    { icon: <BarChart3 size={18} />, label: 'Placed', value: activeUser.stats.totalSquaresPlaced, color: '#06B6D4', bg: '#ECFEFF' },
   ];
 
   return (
@@ -383,7 +422,7 @@ const ProfileView: React.FC<{
             width: 72,
             height: 72,
             borderRadius: '50%',
-            background: `hsl(${(user.displayName.charCodeAt(0) * 47) % 360}, 55%, 50%)`,
+            background: `hsl(${((safeDisplayName.charCodeAt(0) || 65) * 47) % 360}, 55%, 50%)`,
             color: '#FFFFFF',
             display: 'flex',
             alignItems: 'center',
@@ -395,14 +434,14 @@ const ProfileView: React.FC<{
             boxShadow: '0 8px 24px rgba(0,0,0,0.2)'
           }}
         >
-          {user.displayName.charAt(0).toUpperCase()}
+          {safeDisplayName.charAt(0).toUpperCase()}
         </div>
 
         <h2 style={{ fontSize: '1.4rem', fontWeight: 900, color: '#FFFFFF', margin: 0 }}>
-          {user.displayName}
+          {safeDisplayName}
         </h2>
         <p style={{ fontSize: '0.78rem', color: 'rgba(255,255,255,0.65)', fontWeight: 600, margin: '4px 0 0 0' }}>
-          @{user.username} · Joined {new Date(user.createdAt).toLocaleDateString()}
+          @{activeUser.username} · Joined {new Date(activeUser.createdAt).toLocaleDateString()}
         </p>
       </div>
 
@@ -463,6 +502,28 @@ const ProfileView: React.FC<{
           {loadingGames ? (
             <div style={{ textAlign: 'center', padding: 24, color: '#94A3B8', fontSize: '0.82rem', fontWeight: 600 }}>
               Loading history...
+            </div>
+          ) : profileError ? (
+            <div
+              style={{
+                textAlign: 'center',
+                padding: '24px 16px',
+                background: '#FEF2F2',
+                borderRadius: 16,
+                border: '1.5px solid #FECDD3'
+              }}
+            >
+              <p style={{ fontSize: '0.82rem', color: '#B91C1C', fontWeight: 700, margin: '0 0 10px 0' }}>
+                {profileError}
+              </p>
+              <button
+                type="button"
+                onClick={() => setReloadTick(t => t + 1)}
+                className="btn-secondary"
+                style={{ padding: '7px 18px', fontSize: '0.8rem' }}
+              >
+                Retry
+              </button>
             </div>
           ) : recentGames.length === 0 ? (
             <div

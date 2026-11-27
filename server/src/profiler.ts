@@ -5,36 +5,48 @@
 import inspector from 'node:inspector';
 import fs from 'node:fs';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = path.resolve(__dirname, '..', '..');
 
 class CpuProfiler {
   private session: inspector.Session | null = null;
   private isProfiling: boolean = false;
+  private isStarting: boolean = false;
+  private startPromise: Promise<{ success: boolean; message: string }> | null = null;
   private startedAt: number = 0;
 
   public start(): Promise<{ success: boolean; message: string }> {
-    return new Promise((resolve, reject) => {
-      if (this.isProfiling) {
-        return resolve({
-          success: true,
-          message: 'Profiler is already active',
-        });
-      }
+    if (this.isProfiling) {
+      return Promise.resolve({
+        success: true,
+        message: 'Profiler is already active',
+      });
+    }
+    if (this.isStarting && this.startPromise) {
+      return this.startPromise;
+    }
 
-      this.session = new inspector.Session();
-      this.session.connect();
+    this.isStarting = true;
+    this.startPromise = new Promise<{ success: boolean; message: string }>((resolve, reject) => {
+      const session = new inspector.Session();
+      this.session = session;
+      session.connect();
 
-      this.session.post('Profiler.enable', (enableErr) => {
+      session.post('Profiler.enable', (enableErr) => {
         if (enableErr) {
           this.cleanup();
           return reject(enableErr);
         }
 
-        this.session?.post('Profiler.start', (startErr) => {
+        session.post('Profiler.start', (startErr) => {
           if (startErr) {
             this.cleanup();
             return reject(startErr);
           }
 
+          this.isStarting = false;
           this.isProfiling = true;
           this.startedAt = Date.now();
           console.log('🔥 [Profiler] V8 CPU Profiler started for load testing');
@@ -44,57 +56,70 @@ class CpuProfiler {
           });
         });
       });
+    }).finally(() => {
+      this.isStarting = false;
+      this.startPromise = null;
     });
+
+    return this.startPromise;
   }
 
-  public stop(filename: string = 'load-test.cpuprofile'): Promise<{
+  public async stop(filename: string = 'load-test.cpuprofile'): Promise<{
     success: boolean;
     durationMs: number;
     filepath: string;
     message: string;
   }> {
-    return new Promise((resolve, reject) => {
-      if (!this.isProfiling || !this.session) {
-        return resolve({
-          success: false,
-          durationMs: 0,
-          filepath: '',
-          message: 'Profiler was not active',
-        });
-      }
+    if (!this.isProfiling || !this.session) {
+      return {
+        success: false,
+        durationMs: 0,
+        filepath: '',
+        message: 'Profiler was not active',
+      };
+    }
 
-      const durationMs = Date.now() - this.startedAt;
+    const rawName = path.basename(String(filename || 'load-test.cpuprofile'));
+    const baseName = rawName.endsWith('.cpuprofile') ? rawName : `${rawName}.cpuprofile`;
+    if (!/^[a-zA-Z0-9._-]{1,64}\.cpuprofile$/.test(baseName)) {
+      throw new Error('Invalid profile filename');
+    }
 
-      this.session.post('Profiler.stop', (err, result) => {
-        if (err || !result?.profile) {
+    const durationMs = Date.now() - this.startedAt;
+    const session = this.session;
+
+    const result = await new Promise<inspector.Profiler.StopReturnType>((resolve, reject) => {
+      session.post('Profiler.stop', (err, res) => {
+        if (err || !res?.profile) {
           this.cleanup();
           return reject(err || new Error('No profile data returned'));
         }
-
-        const profileJson = JSON.stringify(result.profile);
-
-        // 1. Write to profiles/ directory
-        const outDir = path.resolve(process.cwd(), 'profiles');
-        if (!fs.existsSync(outDir)) {
-          fs.mkdirSync(outDir, { recursive: true });
-        }
-        const profileFilepath = path.join(outDir, filename);
-        fs.writeFileSync(profileFilepath, profileJson);
-
-        // 2. Also write directly to working directory root for quick access
-        const rootFilepath = path.resolve(process.cwd(), filename);
-        fs.writeFileSync(rootFilepath, profileJson);
-
-        this.cleanup();
-        console.log(`✅ [Profiler] Profile captured (${durationMs}ms). Saved to: ${rootFilepath}`);
-        resolve({
-          success: true,
-          durationMs,
-          filepath: rootFilepath,
-          message: `CPU profile captured and written to ${rootFilepath}`,
-        });
+        resolve(res);
       });
     });
+
+    const profileJson = JSON.stringify(result.profile);
+
+    // 1. Write strictly inside repo-root profiles/ directory using sanitized basename
+    const outDir = path.join(REPO_ROOT, 'profiles');
+    await fs.promises.mkdir(outDir, { recursive: true });
+    const profileFilepath = path.join(outDir, baseName);
+    await fs.promises.writeFile(profileFilepath, profileJson);
+
+    // 2. Preserve default flamegraph convenience file at repo root for `npm run flamegraph`
+    if (baseName === 'load-test.cpuprofile') {
+      const rootFilepath = path.join(REPO_ROOT, baseName);
+      await fs.promises.writeFile(rootFilepath, profileJson);
+    }
+
+    this.cleanup();
+    console.log(`✅ [Profiler] Profile captured (${durationMs}ms). Saved to: ${profileFilepath}`);
+    return {
+      success: true,
+      durationMs,
+      filepath: profileFilepath,
+      message: `CPU profile captured and written to ${profileFilepath}`,
+    };
   }
 
   public getStatus(): { isProfiling: boolean; startedAt: number; durationMs: number } {
@@ -106,6 +131,7 @@ class CpuProfiler {
   }
 
   private cleanup() {
+    this.isStarting = false;
     this.isProfiling = false;
     this.startedAt = 0;
     if (this.session) {

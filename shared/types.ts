@@ -66,6 +66,17 @@ export interface Move {
   seq: number;
 }
 
+export interface GameOverRanking {
+  playerId: string;
+  color: PlayerColor;
+  name: string;
+  squaresRemaining: number;
+  bonus?: number;
+  netScore?: number;
+  rank: number;
+  forfeited?: boolean;
+}
+
 export interface RoomState {
   roomId: string;
   status: GameStatus;
@@ -80,20 +91,23 @@ export interface RoomState {
   board: (PlayerColor | null)[][]; // 20x20
   turnStartedAt: number;
   turnDurationSeconds: number;
-  history: Move[];
+  history?: Move[];
   winner?: PlayerColor | 'TIE';
+  rankings?: GameOverRanking[];
 }
 
 // Client-to-Server Messages
 export type ClientMessage =
-  | { type: 'CREATE_ROOM'; playerName: string; avatarSeed?: string }
-  | { type: 'JOIN_ROOM'; roomId: string; playerName: string; avatarSeed?: string; existingPlayerId?: string }
+  | { type: 'CREATE_ROOM'; playerName: string; avatarSeed?: string; authToken?: string }
+  | { type: 'JOIN_ROOM'; roomId: string; playerName: string; avatarSeed?: string; existingPlayerId?: string; playerToken?: string; authToken?: string }
   | { type: 'LEAVE_ROOM'; roomId: string }
   | { type: 'TOGGLE_READY'; roomId: string }
   | { type: 'CHANGE_COLOR'; roomId: string; requestedColor: PlayerColor }
   | { type: 'ADD_BOT'; roomId: string; botName?: string }
   | { type: 'REMOVE_BOT'; roomId: string; botId: string }
+  | { type: 'KICK_PLAYER'; roomId: string; playerId: string }
   | { type: 'START_GAME'; roomId: string }
+  | { type: 'RETURN_TO_LOBBY'; roomId: string }
   | { type: 'PLACE_PIECE'; roomId: string; pieceId: PieceId; rotation: number; flip: boolean; originX: number; originY: number }
   | { type: 'PASS_TURN'; roomId: string }
   | { type: 'CHAT'; roomId: string; message: string }
@@ -104,13 +118,24 @@ export type ServerMessage =
   | { type: 'ROOM_CREATED'; roomId: string; playerId: string; playerToken: string; state: RoomState }
   | { type: 'ROOM_JOINED'; roomId: string; playerId: string; playerToken: string; state: RoomState }
   | { type: 'ROOM_STATE_SYNC'; state: RoomState }
-  | { type: 'MOVE_ACCEPTED'; move: Move; nextTurn: PlayerColor; state: RoomState }
+  | {
+      type: 'MOVE_ACCEPTED';
+      move: Move;
+      nextTurn: PlayerColor;
+      state: RoomState;
+      activePlayerId?: string;
+      turnStartedAt?: number;
+      round?: number;
+    }
   | { type: 'MOVE_REJECTED'; reason: string }
-  | { type: 'TURN_CHANGED'; currentTurn: PlayerColor; turnStartedAt: number }
   | { type: 'PLAYER_PASSED'; playerId: string; color: PlayerColor; nextTurn: PlayerColor }
   | { type: 'PLAYER_DISCONNECTED'; playerId: string; playerName: string; color: PlayerColor; reconnectDeadline?: number }
   | { type: 'PLAYER_RECONNECTED'; playerId: string; playerName: string; color: PlayerColor }
   | { type: 'CHAT_MESSAGE'; senderName: string; color: PlayerColor; message: string; timestamp: number }
-  | { type: 'GAME_OVER'; state: RoomState; rankings: { color: PlayerColor; name: string; squaresRemaining: number; rank: number }[] }
+  | {
+      type: 'GAME_OVER';
+      state: RoomState;
+      rankings?: GameOverRanking[];
+    }
   | { type: 'ERROR'; message: string; code?: 'ROOM_NOT_FOUND' }
   | { type: 'PONG'; clientTs: number; serverTs: number };

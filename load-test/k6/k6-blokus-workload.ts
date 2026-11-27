@@ -181,7 +181,7 @@ export default function () {
       } else {
         // No legal moves remaining for this color
         passesTotal.add(1);
-        sleep(0.5);
+        sleep(Math.max(0.5, 1.05 - thinkDelaySec));
         sock.send(JSON.stringify({ type: 'PASS_TURN', roomId }));
       }
     } finally {

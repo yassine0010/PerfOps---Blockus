@@ -91,6 +91,55 @@ const clientMessagesReceivedCounter = new client.Counter({
   registers: [customRegister],
 });
 
+const ALLOWED_WS_CLOSE_CODES = new Set([
+  '1000', '1001', '1002', '1003', '1005', '1006', '1007', '1008',
+  '1009', '1010', '1011', '1012', '1013', '1015',
+  '4000', '4001', '4002',
+  'other',
+]);
+
+const ALLOWED_REJECTION_REASONS = new Set([
+  'not_in_room',
+  'not_in_progress',
+  'not_your_turn',
+  'piece_already_placed',
+  'unknown_piece_id',
+  'anti_replay',
+  'touching_edge',
+  'no_corner_contact',
+  'out_of_bounds',
+  'cell_occupied',
+  'starting_corner',
+  'illegal_placement',
+  'invalid_input',
+  'unknown',
+]);
+
+function normalizeWsCloseCode(raw: unknown, fallback: string): string {
+  const s = raw !== undefined && raw !== null && raw !== '' && raw !== 0 ? String(raw).trim() : '';
+  if (!s) return fallback;
+  return ALLOWED_WS_CLOSE_CODES.has(s) ? s : 'other';
+}
+
+function normalizeRejectionReason(raw: unknown): string {
+  const s = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
+  if (!s) return 'unknown';
+  if (ALLOWED_REJECTION_REASONS.has(s)) return s;
+  if (s.includes('edge')) return 'touching_edge';
+  if (s.includes('starting corner')) return 'starting_corner';
+  if (s.includes('corner')) return 'no_corner_contact';
+  if (s.includes('bounds') || s.includes('coordinate')) return 'out_of_bounds';
+  if (s.includes('occupied')) return 'cell_occupied';
+  if (s.includes('turn')) return 'not_your_turn';
+  if (s.includes('already placed')) return 'piece_already_placed';
+  if (s.includes('unknown piece')) return 'unknown_piece_id';
+  if (s.includes('too quickly') || s.includes('replay')) return 'anti_replay';
+  if (s.includes('not in progress')) return 'not_in_progress';
+  if (s.includes('not in room')) return 'not_in_room';
+  if (s.includes('rotation') || s.includes('invalid')) return 'invalid_input';
+  return 'illegal_placement';
+}
+
 // ─── Public API ───────────────────────────────────────────────
 export const customMetrics = {
   // 4.3.2 WebSocket Layer
@@ -103,7 +152,7 @@ export const customMetrics = {
   },
 
   recordWsDisconnect(code: number | string) {
-    const codeStr = String(code || '1000');
+    const codeStr = normalizeWsCloseCode(code, '1000');
     wsDisconnectsCounter.inc({ code: codeStr });
   },
 
@@ -123,7 +172,7 @@ export const customMetrics = {
   },
 
   recordMoveRejectedReason(reason: string) {
-    movesRejectedByReasonCounter.inc({ reason: reason || 'unknown' });
+    movesRejectedByReasonCounter.inc({ reason: normalizeRejectionReason(reason) });
   },
 
   // Client events
@@ -131,14 +180,18 @@ export const customMetrics = {
     if (!event || !event.type) return;
 
     if (event.type === 'ws_disconnect') {
-      const codeStr = String(event.code || '1006');
+      const codeStr = normalizeWsCloseCode(event.code, '1006');
       clientWsDisconnectsCounter.inc({ code: codeStr });
     } else if (event.type === 'move_rejected') {
-      const reasonStr = String(event.reason || 'unknown');
+      const reasonStr = normalizeRejectionReason(event.reason);
       clientMovesRejectedCounter.inc({ reason: reasonStr });
     } else if (event.type === 'messages_received') {
-      const count = Number(event.count) || 1;
-      clientMessagesReceivedCounter.inc(count);
+      const rawCount = event.count === undefined ? 1 : Number(event.count);
+      if (!Number.isFinite(rawCount) || rawCount <= 0) return;
+      const count = Math.min(Math.floor(rawCount), 10000);
+      if (count > 0) {
+        clientMessagesReceivedCounter.inc(count);
+      }
     }
   },
 

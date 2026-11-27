@@ -11,28 +11,99 @@ export interface PlayerConnectionAlert {
   playerName: string;
   color: PlayerColor;
   timestamp: number;
+  reconnectDeadline?: number;
+}
+
+const NON_RETRYABLE_CLOSE_CODES = new Set([1008, 4001, 4002]);
+const MAX_RECONNECT_ATTEMPTS = 10;
+const BASE_RECONNECT_DELAY_MS = 1000;
+const MAX_RECONNECT_DELAY_MS = 30000;
+const PING_INTERVAL_MS = 20000;
+const CLOCK_DRIFT_THRESHOLD_MS = 250;
+
+function normalizeMoveRejectionReason(reason: string): string {
+  const lower = (reason || '').toLowerCase();
+  if (lower.includes('out of bounds')) return 'out_of_bounds';
+  if (lower.includes('already occupied')) return 'occupied';
+  if (lower.includes('starting corner')) return 'starting_corner';
+  if (lower.includes('along edges')) return 'edge_touch';
+  if (lower.includes('corner-to-corner')) return 'no_corner';
+  if (lower.includes('turn')) return 'not_your_turn';
+  if (lower.includes('already placed')) return 'piece_unavailable';
+  if (lower.includes('too quickly')) return 'rate_limited';
+  if (lower.includes('not in progress')) return 'game_not_in_progress';
+  if (lower.includes('unknown piece') || lower.includes('empty piece')) return 'invalid_piece';
+  if (lower.includes('not in room')) return 'not_in_room';
+  return 'other';
+}
+
+function clearRoomSessionStorage() {
+  sessionStorage.removeItem('blokus_room_id');
+  sessionStorage.removeItem('blokus_player_id');
+  sessionStorage.removeItem('blokus_player_token');
+}
+
+function getCloseErrorMessage(code: number, reason: string): string {
+  if (reason) return reason;
+  switch (code) {
+    case 4001:
+      return 'Session opened in another tab.';
+    case 4002:
+      return 'You were removed from the room by the host.';
+    case 1008:
+    default:
+      return 'Connection closed due to rate limiting or policy violation.';
+  }
 }
 
 export function useGameSocket() {
   const [connected, setConnected] = useState<boolean>(false);
-  const [connectedAt, setConnectedAt] = useState<number | null>(null);
+  const [clockOffsetMs, setClockOffsetMs] = useState<number>(0);
   const [roomState, setRoomState] = useState<RoomState | null>(null);
   const [playerId, setPlayerId] = useState<string | null>(null);
-  const [playerToken, setPlayerToken] = useState<string | null>(null);
   const [lastError, setLastError] = useState<string | null>(null);
-  const [chatMessages, setChatMessages] = useState<Array<{ senderName: string; color: PlayerColor; message: string; timestamp: number }>>([]);
   const [connectionAlert, setConnectionAlert] = useState<PlayerConnectionAlert | null>(null);
 
   const wsRef = useRef<WebSocket | null>(null);
   const pingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reconnectAttemptsRef = useRef<number>(0);
+  const leaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const errorTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const playerIdRef = useRef<string | null>(null);
   const roomStateRef = useRef<RoomState | null>(null);
+  const activeRoomIdRef = useRef<string | null>(null);
+  const leftRoomRef = useRef<string | null>(null);
   const alertTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingMessagesRef = useRef<ClientMessage[]>([]);
   const moveSentAtRef = useRef<number | null>(null);
   const messagesCountRef = useRef<number>(0);
+  const clockOffsetRef = useRef<number>(0);
 
-  const triggerConnectionAlert = useCallback((type: 'DISCONNECTED' | 'RECONNECTED', pId: string, pName: string, pColor: PlayerColor) => {
+  const showError = useCallback((message: string, durationMs: number = 4000) => {
+    if (errorTimeoutRef.current) clearTimeout(errorTimeoutRef.current);
+    setLastError(message);
+    errorTimeoutRef.current = setTimeout(() => {
+      setLastError(null);
+      errorTimeoutRef.current = null;
+    }, durationMs);
+  }, []);
+
+  const clearError = useCallback(() => {
+    if (errorTimeoutRef.current) {
+      clearTimeout(errorTimeoutRef.current);
+      errorTimeoutRef.current = null;
+    }
+    setLastError(null);
+  }, []);
+
+  const triggerConnectionAlert = useCallback((
+    type: 'DISCONNECTED' | 'RECONNECTED',
+    pId: string,
+    pName: string,
+    pColor: PlayerColor,
+    reconnectDeadline?: number
+  ) => {
     if (alertTimeoutRef.current) clearTimeout(alertTimeoutRef.current);
     if (type === 'DISCONNECTED') {
       sounds.playDisconnectNotification();
@@ -45,11 +116,20 @@ export function useGameSocket() {
       playerId: pId,
       playerName: pName,
       color: pColor,
-      timestamp: Date.now()
+      timestamp: Date.now(),
+      reconnectDeadline
     });
     alertTimeoutRef.current = setTimeout(() => {
       setConnectionAlert(null);
     }, type === 'DISCONNECTED' ? 6000 : 4000);
+  }, []);
+
+  const dismissConnectionAlert = useCallback(() => {
+    if (alertTimeoutRef.current) {
+      clearTimeout(alertTimeoutRef.current);
+      alertTimeoutRef.current = null;
+    }
+    setConnectionAlert(null);
   }, []);
 
   useEffect(() => {
@@ -60,42 +140,64 @@ export function useGameSocket() {
     roomStateRef.current = roomState;
   }, [roomState]);
 
+  const cancelPendingLeaveClose = useCallback(() => {
+    if (leaveTimeoutRef.current) {
+      clearTimeout(leaveTimeoutRef.current);
+      leaveTimeoutRef.current = null;
+    }
+  }, []);
+
   const connect = useCallback(() => {
+    cancelPendingLeaveClose();
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
     if (wsRef.current && (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING)) {
       return;
     }
 
     const wsUrl = getWsUrl();
     const ws = new WebSocket(wsUrl);
+    (ws as WebSocket & { __intentionalClose?: boolean }).__intentionalClose = false;
     wsRef.current = ws;
 
     ws.onopen = () => {
+      if ((ws as WebSocket & { __intentionalClose?: boolean }).__intentionalClose || wsRef.current !== ws) {
+        ws.close();
+        return;
+      }
+      reconnectAttemptsRef.current = 0;
       setConnected(true);
-      setConnectedAt(Date.now());
-      setLastError(null);
+      clearError();
 
-      // Heartbeat ping every 4s to keep connection alive and promptly detect network drops
+      // Measure initial clock offset and keep connection alive
+      ws.send(JSON.stringify({ type: 'PING', clientTs: Date.now() }));
       if (pingIntervalRef.current) clearInterval(pingIntervalRef.current);
       pingIntervalRef.current = setInterval(() => {
         if (ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ type: 'PING', clientTs: Date.now() }));
         }
-      }, 4000);
+      }, PING_INTERVAL_MS);
 
-      // Reconnect to existing room if was previously in one
+      // Reconnect to existing room if session tokens exist
       const savedRoomId = sessionStorage.getItem('blokus_room_id');
       const savedPlayerId = sessionStorage.getItem('blokus_player_id');
+      const savedPlayerToken = sessionStorage.getItem('blokus_player_token');
       const savedName = sessionStorage.getItem('blokus_player_name');
-      if (savedRoomId && savedPlayerId && savedName) {
+      if (savedRoomId && savedPlayerId && savedPlayerToken && savedName) {
+        activeRoomIdRef.current = savedRoomId;
+        leftRoomRef.current = null;
         ws.send(JSON.stringify({
           type: 'JOIN_ROOM',
           roomId: savedRoomId,
           playerName: savedName,
-          existingPlayerId: savedPlayerId
+          existingPlayerId: savedPlayerId,
+          playerToken: savedPlayerToken
         }));
       }
 
-      // Flush any queued messages that were clicked while reconnecting
+      // Flush any queued messages that were sent while connecting
       if (pendingMessagesRef.current.length > 0) {
         console.log(`[WS] Flushing ${pendingMessagesRef.current.length} queued message(s)`);
         while (pendingMessagesRef.current.length > 0) {
@@ -108,31 +210,66 @@ export function useGameSocket() {
     };
 
     ws.onclose = (event: CloseEvent) => {
+      const intentional = Boolean((ws as WebSocket & { __intentionalClose?: boolean }).__intentionalClose);
+      if (wsRef.current === ws) {
+        wsRef.current = null;
+      } else {
+        // Stale socket (e.g. StrictMode double-invoke cleanup): do not disturb active socket or queued messages
+        return;
+      }
+
+      if (pingIntervalRef.current) {
+        clearInterval(pingIntervalRef.current);
+        pingIntervalRef.current = null;
+      }
+
+      if (intentional) {
+        setConnected(false);
+        return;
+      }
+
       joinMetrics.recordClientWsDisconnect(event?.code || 1006);
       if (messagesCountRef.current > 0) {
         joinMetrics.recordClientMessagesReceived(messagesCountRef.current);
         messagesCountRef.current = 0;
       }
       setConnected(false);
-      setConnectedAt(null);
-      if (pingIntervalRef.current) clearInterval(pingIntervalRef.current);
       // Clear pending queue so user isn't locked out of subsequent room creation attempts
       pendingMessagesRef.current = [];
+
+      if (NON_RETRYABLE_CLOSE_CODES.has(event.code)) {
+        clearRoomSessionStorage();
+        activeRoomIdRef.current = null;
+        setRoomState(null);
+        setPlayerId(null);
+        reconnectAttemptsRef.current = 0;
+        showError(getCloseErrorMessage(event.code, event.reason), 5000);
+        return;
+      }
 
       // Smart reconnect: only auto-reconnect if the player was actively inside a room/match
       const inActiveRoom = !!roomStateRef.current || !!sessionStorage.getItem('blokus_room_id');
       if (inActiveRoom) {
-        console.log('[WS] In-game connection dropped. Auto-reconnecting in 1.5s...');
-        setTimeout(connect, 1500);
+        if (reconnectAttemptsRef.current >= MAX_RECONNECT_ATTEMPTS) {
+          showError('Unable to reconnect to game server. Please check your connection.', 6000);
+          return;
+        }
+        const attempt = reconnectAttemptsRef.current++;
+        const delayMs =
+          Math.min(MAX_RECONNECT_DELAY_MS, BASE_RECONNECT_DELAY_MS * (2 ** attempt)) +
+          Math.floor(Math.random() * 500);
+        console.log(`[WS] In-game connection dropped. Auto-reconnecting in ${delayMs}ms (attempt ${attempt + 1}/${MAX_RECONNECT_ATTEMPTS})...`);
+        reconnectTimerRef.current = setTimeout(connect, delayMs);
       } else {
         console.log('[WS] Connection closed in lobby/menu. Remaining idle until next user action.');
       }
     };
 
     ws.onerror = (e) => {
+      if ((ws as WebSocket & { __intentionalClose?: boolean }).__intentionalClose || wsRef.current !== ws) return;
       console.warn('[WS] connection error', e);
       joinMetrics.networkError();
-      setLastError('Unable to connect to game server. Please make sure the server is running.');
+      showError('Unable to connect to game server. Please make sure the server is running.');
       pendingMessagesRef.current = [];
     };
 
@@ -143,15 +280,17 @@ export function useGameSocket() {
         switch (msg.type) {
           case 'ROOM_CREATED':
           case 'ROOM_JOINED': {
+            activeRoomIdRef.current = msg.roomId;
+            leftRoomRef.current = null;
             setPlayerId(msg.playerId);
-            setPlayerToken(msg.playerToken);
             setRoomState(msg.state);
-            setLastError(null);
+            clearError();
             joinMetrics.success();
 
-            // Save to session storage for seamless reload/reconnect
+            // Save to session storage for authenticated seamless reload/reconnect
             sessionStorage.setItem('blokus_room_id', msg.roomId);
             sessionStorage.setItem('blokus_player_id', msg.playerId);
+            sessionStorage.setItem('blokus_player_token', msg.playerToken);
             const selfPlayer = msg.state.players.find(p => p.id === msg.playerId);
             if (selfPlayer) {
               sessionStorage.setItem('blokus_player_name', selfPlayer.name);
@@ -160,35 +299,46 @@ export function useGameSocket() {
           }
 
           case 'ROOM_STATE_SYNC': {
+            if (!activeRoomIdRef.current || msg.state.roomId !== activeRoomIdRef.current || leftRoomRef.current === msg.state.roomId) {
+              break;
+            }
             const previousState = roomStateRef.current;
-            if (previousState) {
-              for (const player of msg.state.players) {
-                const prevPlayer = previousState.players.find(p => p.id === player.id);
-                if (prevPlayer) {
-                  if (prevPlayer.isConnected && !player.isConnected) {
-                    triggerConnectionAlert('DISCONNECTED', player.id, player.name, player.color);
-                  } else if (!prevPlayer.isConnected && player.isConnected) {
-                    triggerConnectionAlert('RECONNECTED', player.id, player.name, player.color);
-                  }
-                }
-              }
+            const myCurrentId = playerIdRef.current;
+            if (
+              previousState &&
+              msg.state.status === 'IN_PROGRESS' &&
+              myCurrentId &&
+              previousState.activePlayerId !== msg.state.activePlayerId &&
+              msg.state.activePlayerId === myCurrentId
+            ) {
+              sounds.playTurnNotification();
             }
             setRoomState(msg.state);
             break;
           }
 
           case 'PLAYER_DISCONNECTED': {
-            triggerConnectionAlert('DISCONNECTED', msg.playerId, msg.playerName, msg.color);
+            if (!activeRoomIdRef.current || leftRoomRef.current === activeRoomIdRef.current) {
+              break;
+            }
+            triggerConnectionAlert('DISCONNECTED', msg.playerId, msg.playerName, msg.color, msg.reconnectDeadline);
             break;
           }
 
           case 'PLAYER_RECONNECTED': {
+            if (!activeRoomIdRef.current || leftRoomRef.current === activeRoomIdRef.current) {
+              break;
+            }
             triggerConnectionAlert('RECONNECTED', msg.playerId, msg.playerName, msg.color);
             break;
           }
 
           case 'MOVE_ACCEPTED': {
+            if (!activeRoomIdRef.current || msg.state.roomId !== activeRoomIdRef.current || leftRoomRef.current === msg.state.roomId) {
+              break;
+            }
             sounds.playPlacePiece();
+            const previousState = roomStateRef.current;
             setRoomState(msg.state);
             const myCurrentId = playerIdRef.current;
             if (msg.move.playerId === myCurrentId && moveSentAtRef.current !== null) {
@@ -196,33 +346,22 @@ export function useGameSocket() {
               moveSentAtRef.current = null;
               joinMetrics.recordMoveDuration(durationMs);
             }
-            if (msg.nextTurn && myCurrentId) {
-              const me = msg.state.players.find(p => p.id === myCurrentId);
-              if (me && me.color === msg.nextTurn) {
-                sounds.playTurnNotification();
-              }
+            if (
+              msg.state.status === 'IN_PROGRESS' &&
+              myCurrentId &&
+              msg.state.activePlayerId === myCurrentId &&
+              previousState?.activePlayerId !== msg.state.activePlayerId
+            ) {
+              sounds.playTurnNotification();
             }
             break;
           }
 
           case 'MOVE_REJECTED': {
-            joinMetrics.recordClientMoveRejected(msg.reason);
+            joinMetrics.recordClientMoveRejected(normalizeMoveRejectionReason(msg.reason));
             moveSentAtRef.current = null;
             sounds.playInvalid();
-            setLastError(msg.reason);
-            setTimeout(() => setLastError(null), 3000);
-            break;
-          }
-
-          case 'TURN_CHANGED': {
-            const myCurrentId = playerIdRef.current;
-            const currentRoom = roomStateRef.current;
-            if (myCurrentId && currentRoom) {
-              const me = currentRoom.players.find(p => p.id === myCurrentId);
-              if (me && me.color === msg.currentTurn) {
-                sounds.playTurnNotification();
-              }
-            }
+            showError(msg.reason, 3000);
             break;
           }
 
@@ -230,30 +369,36 @@ export function useGameSocket() {
             break;
           }
 
-          case 'CHAT_MESSAGE': {
-            setChatMessages(prev => [...prev, {
-              senderName: msg.senderName,
-              color: msg.color,
-              message: msg.message,
-              timestamp: msg.timestamp
-            }]);
-            break;
-          }
-
           case 'GAME_OVER': {
+            if (!activeRoomIdRef.current || msg.state.roomId !== activeRoomIdRef.current || leftRoomRef.current === msg.state.roomId) {
+              break;
+            }
             setRoomState(msg.state);
             break;
           }
 
           case 'PONG': {
+            const rtt = Math.max(0, Date.now() - msg.clientTs);
+            const estimatedOffset = msg.serverTs + Math.floor(rtt / 2) - Date.now();
+            if (Math.abs(estimatedOffset - clockOffsetRef.current) > CLOCK_DRIFT_THRESHOLD_MS) {
+              clockOffsetRef.current = estimatedOffset;
+              setClockOffsetMs(estimatedOffset);
+            }
             break;
           }
 
           case 'ERROR': {
-            if (msg.code === 'ROOM_NOT_FOUND') joinMetrics.wrongCode();
+            if (msg.code === 'ROOM_NOT_FOUND') {
+              joinMetrics.wrongCode();
+              clearRoomSessionStorage();
+              activeRoomIdRef.current = null;
+              setRoomState(null);
+              setPlayerId(null);
+            } else {
+              joinMetrics.rejected();
+            }
             sounds.playInvalid();
-            setLastError(msg.message);
-            setTimeout(() => setLastError(null), 4000);
+            showError(msg.message, 4000);
             break;
           }
         }
@@ -261,7 +406,7 @@ export function useGameSocket() {
         console.error('Failed to parse server message', e);
       }
     };
-  }, []); // Stable callback, doesn't tear down WebSocket when state updates!
+  }, [cancelPendingLeaveClose, clearError, showError, triggerConnectionAlert]);
 
   useEffect(() => {
     joinMetrics.init();
@@ -269,68 +414,102 @@ export function useGameSocket() {
     connect();
 
     return () => {
-      if (pingIntervalRef.current) clearInterval(pingIntervalRef.current);
-      if (wsRef.current) wsRef.current.close();
+      cancelPendingLeaveClose();
+      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+      if (errorTimeoutRef.current) clearTimeout(errorTimeoutRef.current);
+      if (alertTimeoutRef.current) clearTimeout(alertTimeoutRef.current);
+      if (pingIntervalRef.current) {
+        clearInterval(pingIntervalRef.current);
+        pingIntervalRef.current = null;
+      }
+      if (wsRef.current) {
+        const ws = wsRef.current;
+        (ws as WebSocket & { __intentionalClose?: boolean }).__intentionalClose = true;
+        wsRef.current = null;
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.close();
+        }
+        // If CONNECTING (e.g. React StrictMode double-invoke), ws.onopen checks __intentionalClose and closes cleanly
+      }
     };
-  }, [connect]);
+  }, [cancelPendingLeaveClose, connect]);
 
   const send = useCallback((msg: ClientMessage) => {
+    cancelPendingLeaveClose();
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify(msg));
     } else {
       console.log('[WS] Socket not open, queueing message and connecting:', msg.type);
-      // Avoid duplicate room creation if clicked multiple times while connecting
       if (msg.type === 'CREATE_ROOM' && pendingMessagesRef.current.some(m => m.type === 'CREATE_ROOM')) {
         return;
       }
       if (pendingMessagesRef.current.length < 5) {
         pendingMessagesRef.current.push(msg);
       }
-      // Lazily establish the connection if not already connecting
       connect();
     }
-  }, [connect]);
+  }, [cancelPendingLeaveClose, connect]);
 
-  const createRoom = (playerName: string, avatarSeed?: string, authToken?: string) => {
-    // Clear stale session keys so new room starts clean
-    sessionStorage.removeItem('blokus_room_id');
-    sessionStorage.removeItem('blokus_player_id');
+  const createRoom = useCallback((playerName: string, avatarSeed?: string, authToken?: string) => {
+    cancelPendingLeaveClose();
+    leftRoomRef.current = null;
+    reconnectAttemptsRef.current = 0;
+    clearRoomSessionStorage();
     sessionStorage.setItem('blokus_player_name', playerName);
     joinMetrics.start('host');
-    send({ type: 'CREATE_ROOM', playerName, avatarSeed, ...(authToken ? { authToken } as any : {}) } as any);
-  };
+    send({
+      type: 'CREATE_ROOM',
+      playerName,
+      avatarSeed,
+      ...(authToken ? { authToken } : {})
+    });
+  }, [cancelPendingLeaveClose, send]);
 
-  const joinRoom = (roomId: string, playerName: string, avatarSeed?: string, authToken?: string) => {
+  const joinRoom = useCallback((roomId: string, playerName: string, avatarSeed?: string, authToken?: string) => {
+    cancelPendingLeaveClose();
+    leftRoomRef.current = null;
+    reconnectAttemptsRef.current = 0;
     const formattedRoomId = roomId.trim().toUpperCase();
     sessionStorage.setItem('blokus_player_name', playerName);
     const savedRoomId = sessionStorage.getItem('blokus_room_id');
     const savedPlayerId = sessionStorage.getItem('blokus_player_id');
-    const existingPlayerId = savedRoomId === formattedRoomId ? (savedPlayerId || undefined) : undefined;
+    const savedPlayerToken = sessionStorage.getItem('blokus_player_token');
+    const isReconnect = savedRoomId === formattedRoomId && !!savedPlayerId && !!savedPlayerToken;
+    const existingPlayerId = isReconnect ? savedPlayerId! : undefined;
+    const playerTokenArg = isReconnect ? savedPlayerToken! : undefined;
     joinMetrics.start('join');
-    send({ type: 'JOIN_ROOM', roomId: formattedRoomId, playerName, avatarSeed, existingPlayerId, ...(authToken ? { authToken } as any : {}) } as any);
-  };
+    send({
+      type: 'JOIN_ROOM',
+      roomId: formattedRoomId,
+      playerName,
+      avatarSeed,
+      existingPlayerId,
+      playerToken: playerTokenArg,
+      ...(authToken ? { authToken } : {})
+    });
+  }, [cancelPendingLeaveClose, send]);
 
-  const toggleReady = (roomId: string) => {
-    send({ type: 'TOGGLE_READY', roomId });
-  };
-
-  const changeColor = (roomId: string, requestedColor: PlayerColor) => {
-    send({ type: 'CHANGE_COLOR', roomId, requestedColor });
-  };
-
-  const addBot = (roomId: string, botName?: string) => {
+  const addBot = useCallback((roomId: string, botName?: string) => {
     send({ type: 'ADD_BOT', roomId, botName });
-  };
+  }, [send]);
 
-  const removeBot = (roomId: string, botId: string) => {
+  const removeBot = useCallback((roomId: string, botId: string) => {
     send({ type: 'REMOVE_BOT', roomId, botId });
-  };
+  }, [send]);
 
-  const startGame = (roomId: string) => {
+  const kickPlayer = useCallback((roomId: string, targetPlayerId: string) => {
+    send({ type: 'KICK_PLAYER', roomId, playerId: targetPlayerId });
+  }, [send]);
+
+  const startGame = useCallback((roomId: string) => {
     send({ type: 'START_GAME', roomId });
-  };
+  }, [send]);
 
-  const placePiece = (
+  const returnToLobby = useCallback((roomId: string) => {
+    send({ type: 'RETURN_TO_LOBBY', roomId });
+  }, [send]);
+
+  const placePiece = useCallback((
     roomId: string,
     pieceId: PieceId,
     rotation: number,
@@ -340,55 +519,70 @@ export function useGameSocket() {
   ) => {
     moveSentAtRef.current = Date.now();
     send({ type: 'PLACE_PIECE', roomId, pieceId, rotation, flip, originX, originY });
-  };
+  }, [send]);
 
-  const passTurn = (roomId: string) => {
+  const passTurn = useCallback((roomId: string) => {
     send({ type: 'PASS_TURN', roomId });
-  };
+  }, [send]);
 
-  const sendChat = (roomId: string, message: string) => {
-    send({ type: 'CHAT', roomId, message });
-  };
-
-  const leaveRoom = (roomId: string) => {
-    sessionStorage.removeItem('blokus_room_id');
-    sessionStorage.removeItem('blokus_player_id');
+  const leaveRoom = useCallback((roomId: string) => {
+    clearRoomSessionStorage();
     sessionStorage.removeItem('blokus_player_name');
-    send({ type: 'LEAVE_ROOM', roomId });
+    leftRoomRef.current = roomId;
+    activeRoomIdRef.current = null;
+    pendingMessagesRef.current = [];
+    moveSentAtRef.current = null;
+    reconnectAttemptsRef.current = 0;
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'LEAVE_ROOM', roomId }));
+    }
+
     setRoomState(null);
     setPlayerId(null);
-    setPlayerToken(null);
 
-    // Cleanly close the socket when leaving the room and returning to main menu
-    setTimeout(() => {
-      if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-        console.log('[WS] Cleanly closing socket upon returning to main menu');
-        wsRef.current.close();
+    cancelPendingLeaveClose();
+    leaveTimeoutRef.current = setTimeout(() => {
+      leaveTimeoutRef.current = null;
+      const ws = wsRef.current;
+      if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) {
+        (ws as WebSocket & { __intentionalClose?: boolean }).__intentionalClose = true;
+        wsRef.current = null;
+        if (pingIntervalRef.current) {
+          clearInterval(pingIntervalRef.current);
+          pingIntervalRef.current = null;
+        }
+        setConnected(false);
+        if (ws.readyState === WebSocket.OPEN) {
+          console.log('[WS] Cleanly closing socket upon returning to main menu');
+          ws.close(1000, 'Left room');
+        }
       }
     }, 300);
-  };
+  }, [cancelPendingLeaveClose]);
 
   return {
     connected,
-    connectedAt,
+    clockOffsetMs,
     roomState,
     playerId,
-    playerToken,
     lastError,
-    chatMessages,
     connectionAlert,
-    dismissConnectionAlert: () => setConnectionAlert(null),
+    dismissConnectionAlert,
     createRoom,
     joinRoom,
     leaveRoom,
-    toggleReady,
-    changeColor,
     addBot,
     removeBot,
+    kickPlayer,
     startGame,
+    returnToLobby,
     placePiece,
     passTurn,
-    sendChat,
-    resetError: () => setLastError(null)
+    resetError: clearError
   };
 }

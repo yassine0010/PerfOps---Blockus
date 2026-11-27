@@ -1,7 +1,18 @@
 import crypto from 'crypto';
+import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { promisify } from 'util';
 import Database from 'better-sqlite3';
+import { sanitizeDisplayText } from '../../shared/board.ts';
+
+const scryptAsync = promisify(crypto.scrypt) as (
+  password: crypto.BinaryLike,
+  salt: crypto.BinaryLike,
+  keylen: number
+) => Promise<Buffer>;
+
+const MAX_PASSWORD_LENGTH = 128;
 
 // ─── Types ───────────────────────────────────────────────────
 
@@ -10,7 +21,7 @@ export interface UserStats {
   gamesWon: number;
   gamesLost: number;
   totalSquaresPlaced: number;
-  bestScore: number;  // lowest squares remaining (-1 = never finished a game)
+  bestScore: number | null; // lowest net score remaining (null = never finished a game)
   winStreak: number;
   currentStreak: number;
 }
@@ -26,6 +37,7 @@ export interface StoredUser {
 }
 
 export type PublicUser = Omit<StoredUser, 'passwordHash'>;
+export type PublicProfileUser = Omit<PublicUser, 'username'>;
 
 export interface GameRecordPlayer {
   userId: string;
@@ -49,7 +61,6 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DB_PATH = path.join(__dirname, '..', 'data', 'blokus.db');
 
 // Ensure data directory exists
-import fs from 'fs';
 fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
 
 const db = new Database(DB_PATH);
@@ -80,7 +91,8 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS auth_tokens (
     token      TEXT PRIMARY KEY,
     user_id    TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    created_at INTEGER NOT NULL
+    created_at INTEGER NOT NULL,
+    expires_at INTEGER
   );
 
   CREATE TABLE IF NOT EXISTS game_records (
@@ -100,26 +112,51 @@ db.exec(`
     forfeited         INTEGER NOT NULL DEFAULT 0
   );
 
-  CREATE INDEX IF NOT EXISTS idx_tokens_user     ON auth_tokens(user_id);
-  CREATE INDEX IF NOT EXISTS idx_grp_game        ON game_record_players(game_id);
-  CREATE INDEX IF NOT EXISTS idx_grp_user        ON game_record_players(user_id);
-  CREATE INDEX IF NOT EXISTS idx_game_played     ON game_records(played_at);
+  DROP INDEX IF EXISTS idx_tokens_user;
+  CREATE INDEX IF NOT EXISTS idx_tokens_expires     ON auth_tokens(expires_at);
+  CREATE INDEX IF NOT EXISTS idx_users_leaderboard  ON users(games_won DESC, games_played DESC);
+  CREATE INDEX IF NOT EXISTS idx_grp_game           ON game_record_players(game_id);
+  CREATE INDEX IF NOT EXISTS idx_grp_user           ON game_record_players(user_id);
+  CREATE INDEX IF NOT EXISTS idx_game_played        ON game_records(played_at);
 `);
+
+// Non-destructive column migration for existing SQLite databases
+const authTokenColumns = db.prepare(`PRAGMA table_info(auth_tokens)`).all() as { name: string }[];
+if (!authTokenColumns.some(c => c.name === 'expires_at')) {
+  db.exec(`ALTER TABLE auth_tokens ADD COLUMN expires_at INTEGER`);
+}
 
 console.log(`[UserStore] SQLite database ready at ${DB_PATH}`);
 
 // ─── Prepared Statements ─────────────────────────────────────
+
+const TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+
+const PUBLIC_USER_COLUMNS = `
+  id, display_name, avatar_seed, created_at,
+  games_played, games_won, games_lost, total_squares_placed,
+  best_score, win_streak, current_streak
+`;
+
+const FULL_USER_COLUMNS = `
+  id, username, password_hash, display_name, avatar_seed, created_at,
+  games_played, games_won, games_lost, total_squares_placed,
+  best_score, win_streak, current_streak
+`;
 
 const stmts = {
   insertUser: db.prepare(`
     INSERT INTO users (id, username, password_hash, display_name, avatar_seed, created_at)
     VALUES (?, ?, ?, ?, ?, ?)
   `),
-  getUserByUsername: db.prepare(`SELECT * FROM users WHERE username = ?`),
-  getUserById: db.prepare(`SELECT * FROM users WHERE id = ?`),
-  insertToken: db.prepare(`INSERT INTO auth_tokens (token, user_id, created_at) VALUES (?, ?, ?)`),
+  getUserByUsername: db.prepare(`SELECT ${FULL_USER_COLUMNS} FROM users WHERE username = ?`),
+  getUserById: db.prepare(`SELECT ${FULL_USER_COLUMNS} FROM users WHERE id = ?`),
+  getPublicProfileById: db.prepare(`SELECT ${PUBLIC_USER_COLUMNS} FROM users WHERE id = ?`),
+  updatePasswordHash: db.prepare(`UPDATE users SET password_hash = ? WHERE id = ?`),
+  insertToken: db.prepare(`INSERT INTO auth_tokens (token, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)`),
   deleteToken: db.prepare(`DELETE FROM auth_tokens WHERE token = ?`),
-  getUserIdByToken: db.prepare(`SELECT user_id FROM auth_tokens WHERE token = ?`),
+  deleteExpiredTokens: db.prepare(`DELETE FROM auth_tokens WHERE expires_at IS NOT NULL AND expires_at < ?`),
+  getTokenInfo: db.prepare(`SELECT user_id, expires_at FROM auth_tokens WHERE token = ?`),
   updateStats: db.prepare(`
     UPDATE users SET
       games_played = ?, games_won = ?, games_lost = ?,
@@ -128,7 +165,7 @@ const stmts = {
     WHERE id = ?
   `),
   getLeaderboard: db.prepare(`
-    SELECT * FROM users WHERE games_played > 0
+    SELECT ${PUBLIC_USER_COLUMNS} FROM users WHERE games_played > 0
     ORDER BY games_won DESC,
       CASE WHEN games_played > 0 THEN CAST(games_won AS REAL) / games_played ELSE 0 END DESC,
       games_played DESC
@@ -140,30 +177,52 @@ const stmts = {
     VALUES (?, ?, ?, ?, ?, ?, ?)
   `),
   getPlayerGames: db.prepare(`
-    SELECT gr.* FROM game_records gr
+    SELECT DISTINCT gr.id, gr.room_id, gr.played_at FROM game_records gr
     INNER JOIN game_record_players grp ON grp.game_id = gr.id
     WHERE grp.user_id = ?
     ORDER BY gr.played_at DESC
     LIMIT ?
   `),
-  getGamePlayers: db.prepare(`SELECT * FROM game_record_players WHERE game_id = ?`),
 };
+
+// Periodically prune expired auth tokens
+stmts.deleteExpiredTokens.run(Date.now());
+const tokenSweepTimer = setInterval(() => {
+  stmts.deleteExpiredTokens.run(Date.now());
+}, 60 * 60 * 1000);
+if (tokenSweepTimer.unref) tokenSweepTimer.unref();
 
 // ─── Helpers ─────────────────────────────────────────────────
 
-function hashPassword(password: string): string {
-  return crypto.createHash('sha256').update(password + '_blokus_salt').digest('hex');
+async function hashPassword(password: string): Promise<string> {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const derived = await scryptAsync(password, salt, 64);
+  return `scrypt:${salt}:${derived.toString('hex')}`;
+}
+
+async function verifyPassword(password: string, storedHash: string): Promise<{ valid: boolean; needsUpgrade: boolean }> {
+  if (storedHash.startsWith('scrypt:')) {
+    const parts = storedHash.split(':');
+    if (parts.length !== 3) return { valid: false, needsUpgrade: false };
+    const [, salt, hex] = parts;
+    const derived = await scryptAsync(password, salt, 64);
+    const expected = Buffer.from(hex, 'hex');
+    if (derived.length !== expected.length) return { valid: false, needsUpgrade: false };
+    return { valid: crypto.timingSafeEqual(derived, expected), needsUpgrade: false };
+  }
+  // Backward-compatible verification for legacy SHA-256 hashes (upgraded on login)
+  const legacyHash = crypto.createHash('sha256').update(password + '_blokus_salt').digest('hex');
+  const matches = legacyHash === storedHash;
+  return { valid: matches, needsUpgrade: matches };
 }
 
 function generateId(prefix: string): string {
   return `${prefix}_${crypto.randomBytes(8).toString('hex')}`;
 }
 
-function rowToUser(row: any): StoredUser {
+function rowToPublicProfileUser(row: any): PublicProfileUser {
   return {
     id: row.id,
-    username: row.username,
-    passwordHash: row.password_hash,
     displayName: row.display_name,
     avatarSeed: row.avatar_seed,
     createdAt: row.created_at,
@@ -172,10 +231,18 @@ function rowToUser(row: any): StoredUser {
       gamesWon: row.games_won,
       gamesLost: row.games_lost,
       totalSquaresPlaced: row.total_squares_placed,
-      bestScore: row.best_score,
+      bestScore: row.games_played === 0 || row.best_score === -1 ? null : row.best_score,
       winStreak: row.win_streak,
       currentStreak: row.current_streak,
     }
+  };
+}
+
+function rowToUser(row: any): StoredUser {
+  return {
+    username: row.username,
+    passwordHash: row.password_hash,
+    ...rowToPublicProfileUser(row),
   };
 }
 
@@ -184,45 +251,66 @@ function sanitizeUser(user: StoredUser): PublicUser {
   return safe;
 }
 
+export interface AuthResult {
+  success: boolean;
+  error?: string;
+  statusCode?: number;
+  token?: string;
+  user?: PublicUser;
+}
+
 // ─── Store (public API) ──────────────────────────────────────
 
 class UserStore {
 
   // ── Auth ──
 
-  public register(
+  public async register(
     username: string,
     password: string,
     displayName?: string
-  ): { success: boolean; error?: string; token?: string; user?: PublicUser } {
+  ): Promise<AuthResult> {
+    if (typeof username !== 'string' || typeof password !== 'string') {
+      return { success: false, statusCode: 400, error: 'Username and password must be strings' };
+    }
+
     const normalized = username.toLowerCase().trim();
 
     if (normalized.length < 3 || normalized.length > 20) {
-      return { success: false, error: 'Username must be 3–20 characters' };
+      return { success: false, statusCode: 400, error: 'Username must be 3–20 characters' };
     }
     if (!/^[a-z0-9_]+$/.test(normalized)) {
-      return { success: false, error: 'Username may only contain letters, numbers, and underscores' };
+      return { success: false, statusCode: 400, error: 'Username may only contain letters, numbers, and underscores' };
     }
-    if (password.length < 4) {
-      return { success: false, error: 'Password must be at least 4 characters' };
+    if (password.length < 4 || password.length > MAX_PASSWORD_LENGTH) {
+      return { success: false, statusCode: 400, error: `Password must be 4–${MAX_PASSWORD_LENGTH} characters` };
     }
 
     const existing = stmts.getUserByUsername.get(normalized);
     if (existing) {
-      return { success: false, error: 'Username already taken' };
+      return { success: false, statusCode: 409, error: 'Username already taken' };
     }
 
     const userId = generateId('u');
     const now = Date.now();
+    const cleanDisplay = sanitizeDisplayText(displayName, 15, normalized);
+    const passwordHash = await hashPassword(password);
 
-    stmts.insertUser.run(
-      userId,
-      normalized,
-      hashPassword(password),
-      (displayName || username).trim().substring(0, 15),
-      username,
-      now
-    );
+    try {
+      stmts.insertUser.run(
+        userId,
+        normalized,
+        passwordHash,
+        cleanDisplay,
+        cleanDisplay,
+        now
+      );
+    } catch (err: any) {
+      if (err?.code === 'SQLITE_CONSTRAINT_UNIQUE' || String(err?.message).includes('UNIQUE constraint failed')) {
+        return { success: false, statusCode: 409, error: 'Username already taken' };
+      }
+      throw err;
+    }
 
     const token = this.createToken(userId);
     const user = rowToUser(stmts.getUserById.get(userId));
@@ -231,15 +319,31 @@ class UserStore {
     return { success: true, token, user: sanitizeUser(user) };
   }
 
-  public login(
+  public async login(
     username: string,
     password: string
-  ): { success: boolean; error?: string; token?: string; user?: PublicUser } {
+  ): Promise<AuthResult> {
+    if (typeof username !== 'string' || typeof password !== 'string') {
+      return { success: false, statusCode: 400, error: 'Username and password must be strings' };
+    }
+    if (password.length === 0 || password.length > MAX_PASSWORD_LENGTH) {
+      return { success: false, statusCode: 401, error: 'Invalid username or password' };
+    }
+
     const normalized = username.toLowerCase().trim();
     const row = stmts.getUserByUsername.get(normalized) as any;
 
-    if (!row || row.password_hash !== hashPassword(password)) {
-      return { success: false, error: 'Invalid username or password' };
+    if (!row) {
+      return { success: false, statusCode: 401, error: 'Invalid username or password' };
+    }
+
+    const check = await verifyPassword(password, row.password_hash);
+    if (!check.valid) {
+      return { success: false, statusCode: 401, error: 'Invalid username or password' };
+    }
+
+    if (check.needsUpgrade) {
+      stmts.updatePasswordHash.run(await hashPassword(password), row.id);
     }
 
     const token = this.createToken(row.id);
@@ -256,60 +360,79 @@ class UserStore {
   // ── Token Lookup ──
 
   public getUserByToken(token: string): PublicUser | null {
-    const tokenRow = stmts.getUserIdByToken.get(token) as any;
-    if (!tokenRow) return null;
-    const userRow = stmts.getUserById.get(tokenRow.user_id) as any;
+    const userId = this.getUserIdByToken(token);
+    if (!userId) return null;
+    const userRow = stmts.getUserById.get(userId) as any;
     if (!userRow) return null;
     return sanitizeUser(rowToUser(userRow));
   }
 
   public getUserIdByToken(token: string): string | null {
-    const row = stmts.getUserIdByToken.get(token) as any;
-    return row ? row.user_id : null;
+    if (typeof token !== 'string' || !token) return null;
+    const row = stmts.getTokenInfo.get(token) as { user_id: string; expires_at: number | null } | undefined;
+    if (!row) return null;
+    if (row.expires_at !== null && row.expires_at < Date.now()) {
+      stmts.deleteToken.run(token);
+      return null;
+    }
+    return row.user_id;
   }
 
   // ── Profile ──
 
-  public getUserById(userId: string): PublicUser | null {
-    const row = stmts.getUserById.get(userId) as any;
-    return row ? sanitizeUser(rowToUser(row)) : null;
-  }
-
-  public getProfile(userId: string): { user: PublicUser; recentGames: GameRecord[] } | null {
-    const row = stmts.getUserById.get(userId) as any;
+  public getProfile(userId: string): { user: PublicProfileUser; recentGames: GameRecord[] } | null {
+    const row = stmts.getPublicProfileById.get(userId) as any;
     if (!row) return null;
 
+    const user = rowToPublicProfileUser(row);
     const gameRows = stmts.getPlayerGames.all(userId, 10) as any[];
-    const recentGames: GameRecord[] = gameRows.map(gr => {
-      const players = (stmts.getGamePlayers.all(gr.id) as any[]).map(p => ({
+    if (gameRows.length === 0) {
+      return { user, recentGames: [] };
+    }
+
+    // Batch fetch all participants across recent games (eliminates N+1 queries)
+    const placeholders = gameRows.map(() => '?').join(',');
+    const playerRows = db
+      .prepare(`SELECT game_id, user_id, player_name, color, squares_remaining, rank, forfeited FROM game_record_players WHERE game_id IN (${placeholders}) ORDER BY rank ASC, id ASC`)
+      .all(...gameRows.map(g => g.id)) as any[];
+
+    const playersByGame = new Map<string, GameRecordPlayer[]>();
+    for (const p of playerRows) {
+      let list = playersByGame.get(p.game_id);
+      if (!list) {
+        list = [];
+        playersByGame.set(p.game_id, list);
+      }
+      list.push({
         userId: p.user_id || '',
         playerName: p.player_name,
         color: p.color,
         squaresRemaining: p.squares_remaining,
         rank: p.rank,
         forfeited: !!p.forfeited
-      }));
-      return {
-        id: gr.id,
-        roomId: gr.room_id,
-        playedAt: gr.played_at,
-        players
-      };
-    });
+      });
+    }
 
-    return { user: sanitizeUser(rowToUser(row)), recentGames };
+    const recentGames: GameRecord[] = gameRows.map(gr => ({
+      id: gr.id,
+      roomId: gr.room_id,
+      playedAt: gr.played_at,
+      players: playersByGame.get(gr.id) || []
+    }));
+
+    return { user, recentGames };
   }
 
   // ── Leaderboard ──
 
-  public getLeaderboard(limit: number = 25): (PublicUser & { winRate: number })[] {
+  public getLeaderboard(limit: number = 25): (PublicProfileUser & { winRate: number })[] {
     const rows = stmts.getLeaderboard.all(limit) as any[];
     return rows.map(row => {
-      const user = rowToUser(row);
+      const user = rowToPublicProfileUser(row);
       const winRate = user.stats.gamesPlayed > 0
         ? Math.round((user.stats.gamesWon / user.stats.gamesPlayed) * 100)
         : 0;
-      return { ...sanitizeUser(user), winRate };
+      return { ...user, winRate };
     });
   }
 
@@ -322,6 +445,10 @@ class UserStore {
       playerName: string;
       color: string;
       squaresRemaining: number;
+      squaresPlaced?: number;
+      bonus?: number;
+      netScore?: number;
+      is2P?: boolean;
       rank: number;
       forfeited: boolean;
     }[]
@@ -331,6 +458,7 @@ class UserStore {
 
     const recordGameTx = db.transaction(() => {
       stmts.insertGameRecord.run(gameId, roomId, now);
+      const updatedUserIds = new Set<string>();
 
       for (const r of results) {
         stmts.insertGamePlayer.run(
@@ -343,8 +471,10 @@ class UserStore {
           r.forfeited ? 1 : 0
         );
 
-        // Update user stats if authenticated
-        if (!r.userId) continue;
+        // Update user stats if authenticated (at most once per userId per match)
+        if (!r.userId || updatedUserIds.has(r.userId)) continue;
+        updatedUserIds.add(r.userId);
+
         const userRow = stmts.getUserById.get(r.userId) as any;
         if (!userRow) continue;
 
@@ -352,12 +482,19 @@ class UserStore {
         const gamesPlayed = userRow.games_played + 1;
         const gamesWon = userRow.games_won + (isWinner ? 1 : 0);
         const gamesLost = userRow.games_lost + (isWinner ? 0 : 1);
-        const squaresPlaced = Math.max(0, 89 - r.squaresRemaining);
+        const squaresPlaced = typeof r.squaresPlaced === 'number'
+          ? Math.max(0, r.squaresPlaced)
+          : Math.max(0, (r.is2P ? 178 : 89) - r.squaresRemaining);
         const totalSquaresPlaced = userRow.total_squares_placed + squaresPlaced;
 
         let bestScore = userRow.best_score;
-        if (!r.forfeited && (bestScore === -1 || r.squaresRemaining < bestScore)) {
-          bestScore = r.squaresRemaining;
+        if (!r.forfeited) {
+          const comparableScore = r.is2P
+            ? Math.round(r.squaresRemaining / 2) - (r.bonus || 0)
+            : (typeof r.netScore === 'number' ? r.netScore : r.squaresRemaining - (r.bonus || 0));
+          if (userRow.games_played === 0 || bestScore === -1 || comparableScore < bestScore) {
+            bestScore = comparableScore;
+          }
         }
 
         let currentStreak = isWinner ? userRow.current_streak + 1 : 0;
@@ -379,8 +516,9 @@ class UserStore {
   // ── Private ──
 
   private createToken(userId: string): string {
-    const token = `auth_${crypto.randomBytes(16).toString('hex')}`;
-    stmts.insertToken.run(token, userId, Date.now());
+    const now = Date.now();
+    const token = `auth_${crypto.randomBytes(24).toString('hex')}`;
+    stmts.insertToken.run(token, userId, now, now + TOKEN_TTL_MS);
     return token;
   }
 }

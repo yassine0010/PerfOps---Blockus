@@ -1,6 +1,8 @@
+import crypto from 'crypto';
 import express from 'express';
 import http from 'http';
 import { WebSocket, WebSocketServer } from 'ws';
+import { PLAYER_COLORS, sanitizeDisplayText } from '../../shared/board.ts';
 import type { ClientMessage } from '../../shared/types.ts';
 import { RoomManager } from './roomManager.ts';
 import { userStore } from './userStore.ts';
@@ -42,7 +44,9 @@ interface WsRateState {
   msgCount: number;          // messages in current 1-second window
   windowStart: number;       // start of current window (ms)
   violations: number;        // consecutive over-limit windows
+  throttledInWindow: boolean;
   actionTimestamps: Map<string, number>; // last timestamp per action type
+  turnActionState: Map<string, { turnKey: string; timestamp: number }>; // per-turn cooldowns for PLACE_PIECE / PASS_TURN
 }
 
 const WS_GLOBAL_LIMIT = 20;  // max messages per second per connection
@@ -50,43 +54,66 @@ const WS_MAX_VIOLATIONS = 3; // terminate after this many consecutive violations
 
 // Per-action minimum intervals (ms)
 const ACTION_COOLDOWNS: Record<string, number> = {
-  PLACE_PIECE: 500,    // no human places faster than 500ms
+  PLACE_PIECE: 500,    // no human places faster than 500ms on the same turn
   PASS_TURN: 1000,
   CREATE_ROOM: 5000,
   JOIN_ROOM: 2000,
   START_GAME: 3000,
+  RETURN_TO_LOBBY: 2000,
   ADD_BOT: 1000,
   REMOVE_BOT: 1000,
 };
 
-function checkWsRate(state: WsRateState): 'ok' | 'throttled' | 'terminate' {
+function checkWsRate(state: WsRateState): 'ok' | 'throttled' | 'throttled_silent' | 'terminate' {
   const now = Date.now();
-  if (now - state.windowStart > 1000) {
-    // New 1-second window
-    if (state.msgCount > WS_GLOBAL_LIMIT) {
-      state.violations++;
-    } else {
+  const elapsed = now - state.windowStart;
+  if (elapsed > 1000) {
+    if (state.msgCount <= WS_GLOBAL_LIMIT || elapsed > 2000) {
       state.violations = 0;
     }
     state.msgCount = 1;
     state.windowStart = now;
+    state.throttledInWindow = false;
   } else {
     state.msgCount++;
   }
 
-  if (state.violations >= WS_MAX_VIOLATIONS) return 'terminate';
-  if (state.msgCount > WS_GLOBAL_LIMIT) return 'throttled';
+  if (state.msgCount > WS_GLOBAL_LIMIT) {
+    if (!state.throttledInWindow) {
+      state.violations++;
+      state.throttledInWindow = true;
+      if (state.violations >= WS_MAX_VIOLATIONS) return 'terminate';
+      return 'throttled';
+    }
+    return state.violations >= WS_MAX_VIOLATIONS ? 'terminate' : 'throttled_silent';
+  }
   return 'ok';
 }
 
-function checkActionCooldown(state: WsRateState, action: string): boolean {
+function isActionOnCooldown(state: WsRateState, action: string): boolean {
   const cooldown = ACTION_COOLDOWNS[action];
-  if (!cooldown) return true; // no cooldown for this action
+  if (!cooldown) return false;
   const now = Date.now();
   const last = state.actionTimestamps.get(action) || 0;
-  if (now - last < cooldown) return false; // too fast
-  state.actionTimestamps.set(action, now);
-  return true;
+  return now - last < cooldown;
+}
+
+function recordActionCooldown(state: WsRateState, action: string): void {
+  if (!ACTION_COOLDOWNS[action]) return;
+  state.actionTimestamps.set(action, Date.now());
+}
+
+function isTurnActionOnCooldown(state: WsRateState, action: string, turnKey: string): boolean {
+  const cooldown = ACTION_COOLDOWNS[action];
+  if (!cooldown) return false;
+  const prev = state.turnActionState.get(action);
+  if (!prev || prev.turnKey !== turnKey) return false;
+  return Date.now() - prev.timestamp < cooldown;
+}
+
+function recordTurnActionCooldown(state: WsRateState, action: string, turnKey: string): void {
+  if (!ACTION_COOLDOWNS[action]) return;
+  state.turnActionState.set(action, { turnKey, timestamp: Date.now() });
 }
 
 // CORS — allow cross-origin from the Vite dev server (and LAN IPs)
@@ -108,8 +135,40 @@ app.get('/health', (req, res) => {
   });
 });
 
+function isLoopbackAddress(addr: string | undefined): boolean {
+  if (!addr) return false;
+  return addr === '127.0.0.1' || addr === '::1' || addr === '::ffff:127.0.0.1';
+}
+
+function hasProxyForwardingHeaders(req: express.Request): boolean {
+  return Boolean(
+    req.headers['x-forwarded-for'] ||
+    req.headers['forwarded'] ||
+    req.headers['x-real-ip']
+  );
+}
+
+function requireProfilerAccess(req: express.Request, res: express.Response, next: express.NextFunction) {
+  const configuredToken = process.env.PROFILER_TOKEN;
+  if (configuredToken) {
+    const authHeader = req.headers.authorization || '';
+    if (authHeader === `Bearer ${configuredToken}`) {
+      return next();
+    }
+    return res.status(403).json({ error: 'Forbidden: invalid profiler token' });
+  }
+  if (
+    process.env.NODE_ENV !== 'production' &&
+    isLoopbackAddress(req.socket.remoteAddress) &&
+    !hasProxyForwardingHeaders(req)
+  ) {
+    return next();
+  }
+  return res.status(403).json({ error: 'Forbidden: profiler endpoints are restricted to localhost' });
+}
+
 // ─── On-Demand V8 CPU Profiler Endpoints (for Load Testing) ───
-app.post('/api/debug/profile/start', async (req, res) => {
+app.post('/api/debug/profile/start', requireProfilerAccess, async (req, res) => {
   try {
     const result = await cpuProfiler.start();
     res.json(result);
@@ -119,39 +178,65 @@ app.post('/api/debug/profile/start', async (req, res) => {
   }
 });
 
-app.post('/api/debug/profile/stop', async (req, res) => {
+app.post('/api/debug/profile/stop', requireProfilerAccess, async (req, res) => {
   try {
-    const filename = req.body?.filename || 'load-test.cpuprofile';
-    const result = await cpuProfiler.stop(filename);
+    const rawFilename = req.body?.filename;
+    if (rawFilename !== undefined && typeof rawFilename !== 'string') {
+      return res.status(400).json({ error: 'Invalid filename' });
+    }
+    const result = await cpuProfiler.stop(rawFilename || 'load-test.cpuprofile');
     res.json(result);
   } catch (err: any) {
     console.error('[Profiler] Failed to stop:', err);
-    res.status(500).json({ error: err?.message || 'Failed to stop profiler' });
+    const status = err?.message?.includes('Invalid') ? 400 : 500;
+    res.status(status).json({ error: err?.message || 'Failed to stop profiler' });
   }
 });
 
-app.get('/api/debug/profile/status', (req, res) => {
+app.get('/api/debug/profile/status', requireProfilerAccess, (req, res) => {
   res.json(cpuProfiler.getStatus());
 });
 
 // POST /api/register
-app.post('/api/register', (req, res) => {
-  const { username, password, displayName } = req.body;
-  if (!username || !password) {
-    return res.status(400).json({ success: false, error: 'Username and password are required' });
+app.post('/api/register', async (req, res) => {
+  try {
+    const { username, password, displayName } = req.body || {};
+    if (
+      typeof username !== 'string' ||
+      typeof password !== 'string' ||
+      !username ||
+      !password ||
+      (displayName !== undefined && typeof displayName !== 'string')
+    ) {
+      return res.status(400).json({ success: false, error: 'Valid username and password strings are required' });
+    }
+    const result = await userStore.register(username, password, displayName);
+    if (!result.success) {
+      return res.status(result.statusCode || 400).json({ success: false, error: result.error });
+    }
+    res.json({ success: true, token: result.token, user: result.user });
+  } catch (err) {
+    console.error('[API] Register error:', err);
+    res.status(500).json({ success: false, error: 'Internal server error' });
   }
-  const result = userStore.register(username, password, displayName);
-  res.json(result);
 });
 
 // POST /api/login
-app.post('/api/login', (req, res) => {
-  const { username, password } = req.body;
-  if (!username || !password) {
-    return res.status(400).json({ success: false, error: 'Username and password are required' });
+app.post('/api/login', async (req, res) => {
+  try {
+    const { username, password } = req.body || {};
+    if (typeof username !== 'string' || typeof password !== 'string' || !username || !password) {
+      return res.status(400).json({ success: false, error: 'Valid username and password strings are required' });
+    }
+    const result = await userStore.login(username, password);
+    if (!result.success) {
+      return res.status(result.statusCode || 401).json({ success: false, error: result.error });
+    }
+    res.json({ success: true, token: result.token, user: result.user });
+  } catch (err) {
+    console.error('[API] Login error:', err);
+    res.status(500).json({ success: false, error: 'Internal server error' });
   }
-  const result = userStore.login(username, password);
-  res.json(result);
 });
 
 // POST /api/logout
@@ -405,6 +490,14 @@ app.get('/metrics', async (req, res) => {
   }
 });
 
+// Handle malformed JSON request bodies without exposing stack traces
+app.use((err: any, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (err?.type === 'entity.parse.failed' || err instanceof SyntaxError) {
+    return res.status(400).json({ error: 'Invalid JSON request body' });
+  }
+  next(err);
+});
+
 // WebSocket Connection Lifecycle
 wss.on('connection', (ws: WebSocket, req) => {
   customMetrics.recordWsConnection();
@@ -424,12 +517,14 @@ wss.on('connection', (ws: WebSocket, req) => {
     msgCount: 0,
     windowStart: Date.now(),
     violations: 0,
+    throttledInWindow: false,
     actionTimestamps: new Map(),
+    turnActionState: new Map(),
   };
 
-  (ws as any).isAlive = true;
+  (ws as any).missedPongs = 0;
   ws.on('pong', () => {
-    (ws as any).isAlive = true;
+    (ws as any).missedPongs = 0;
   });
 
   const send = (msg: unknown) => {
@@ -438,10 +533,25 @@ wss.on('connection', (ws: WebSocket, req) => {
     }
   };
 
+  const leavePreviousRoom = (excludeRoomId?: string) => {
+    if (currentRoomId && currentPlayerId && currentRoomId !== excludeRoomId) {
+      const prevRoom = roomManager.getRoom(currentRoomId);
+      if (prevRoom) {
+        prevRoom.removePlayer(currentPlayerId, true);
+      }
+      currentRoomId = null;
+      currentPlayerId = null;
+    }
+  };
+
   ws.on('message', (data: string) => {
     customMetrics.recordWsMessage();
     try {
       const msg: ClientMessage = JSON.parse(data.toString());
+      if (!msg || typeof msg !== 'object' || typeof (msg as any).type !== 'string') {
+        send({ type: 'ERROR', message: 'Invalid message payload.' });
+        return;
+      }
 
       // ── Global rate check ──
       const rateResult = checkWsRate(rateState);
@@ -454,25 +564,30 @@ wss.on('connection', (ws: WebSocket, req) => {
         send({ type: 'ERROR', message: 'Slow down — too many messages' });
         return;
       }
-
-      // ── Per-action cooldown check ──
-      if (!checkActionCooldown(rateState, msg.type)) {
-        send({ type: 'ERROR', message: 'Action too fast — please wait' });
+      if (rateResult === 'throttled_silent') {
         return;
       }
 
       switch (msg.type) {
         case 'CREATE_ROOM': {
+          if (isActionOnCooldown(rateState, 'CREATE_ROOM')) {
+            send({ type: 'ERROR', message: 'Action too fast — please wait' });
+            return;
+          }
+
+          leavePreviousRoom();
           const room = roomManager.createRoom();
 
           // Resolve authenticated user from optional authToken
           let userId: string | undefined;
-          if ((msg as any).authToken) {
-            userId = userStore.getUserIdByToken((msg as any).authToken) || undefined;
+          if (typeof msg.authToken === 'string' && msg.authToken) {
+            userId = userStore.getUserIdByToken(msg.authToken) || undefined;
           }
 
-          const player = room.addPlayer(msg.playerName || 'Player', true, msg.avatarSeed, ws, userId);
-          const token = 'tok_' + Math.random().toString(36).substring(2, 12);
+          const safePlayerName = typeof msg.playerName === 'string' ? msg.playerName : 'Player';
+          const safeAvatarSeed = typeof msg.avatarSeed === 'string' ? msg.avatarSeed : undefined;
+          const player = room.addPlayer(safePlayerName, true, safeAvatarSeed, ws, userId);
+          const token = `tok_${crypto.randomBytes(16).toString('hex')}`;
           roomManager.registerSession(token, room.roomId, player.id);
 
           // Wire up game-end callback for stat recording
@@ -482,6 +597,7 @@ wss.on('connection', (ws: WebSocket, req) => {
 
           currentPlayerId = player.id;
           currentRoomId = room.roomId;
+          recordActionCooldown(rateState, 'CREATE_ROOM');
 
           send({
             type: 'ROOM_CREATED',
@@ -494,7 +610,11 @@ wss.on('connection', (ws: WebSocket, req) => {
         }
 
         case 'JOIN_ROOM': {
-          const room = roomManager.getRoom(msg.roomId);
+          if (typeof msg.roomId !== 'string' || !msg.roomId.trim()) {
+            send({ type: 'ERROR', message: 'Invalid room code.', code: 'ROOM_NOT_FOUND' });
+            return;
+          }
+          const room = roomManager.getRoom(msg.roomId.trim());
           if (!room) {
             send({ type: 'ERROR', message: `Room "${msg.roomId}" not found.`, code: 'ROOM_NOT_FOUND' });
             return;
@@ -502,8 +622,8 @@ wss.on('connection', (ws: WebSocket, req) => {
 
           // Resolve authenticated user from optional authToken
           let joinUserId: string | undefined;
-          if ((msg as any).authToken) {
-            joinUserId = userStore.getUserIdByToken((msg as any).authToken) || undefined;
+          if (typeof msg.authToken === 'string' && msg.authToken) {
+            joinUserId = userStore.getUserIdByToken(msg.authToken) || undefined;
           }
 
           // Ensure game-end callback is wired up
@@ -513,16 +633,37 @@ wss.on('connection', (ws: WebSocket, req) => {
             };
           }
 
-          // Check if player is reconnecting first (handles both WAITING and IN_PROGRESS)
-          if (msg.existingPlayerId && room.players.has(msg.existingPlayerId)) {
-            room.reconnectPlayer(msg.existingPlayerId, ws);
+          // Check authenticated session token when reconnecting to an existing player slot
+          if (typeof msg.existingPlayerId === 'string' && msg.existingPlayerId) {
+            if (!room.players.has(msg.existingPlayerId)) {
+              send({ type: 'ERROR', message: 'Session expired. Room slot no longer exists.', code: 'ROOM_NOT_FOUND' });
+              return;
+            }
+            const session = typeof msg.playerToken === 'string' ? roomManager.getSession(msg.playerToken) : undefined;
+            if (!session || session.roomId !== room.roomId || session.playerId !== msg.existingPlayerId) {
+              send({ type: 'ERROR', message: 'Invalid reconnect token.', code: 'ROOM_NOT_FOUND' });
+              return;
+            }
+            if (isActionOnCooldown(rateState, 'JOIN_ROOM')) {
+              send({ type: 'ERROR', message: 'Action too fast — please wait' });
+              return;
+            }
+
+            leavePreviousRoom(room.roomId);
+            const reconnected = room.reconnectPlayer(msg.existingPlayerId, ws);
+            if (!reconnected) {
+              send({ type: 'ERROR', message: 'Cannot rejoin after forfeiting this match.', code: 'ROOM_NOT_FOUND' });
+              return;
+            }
+
             currentPlayerId = msg.existingPlayerId;
             currentRoomId = room.roomId;
+            recordActionCooldown(rateState, 'JOIN_ROOM');
             send({
               type: 'ROOM_JOINED',
               roomId: room.roomId,
               playerId: msg.existingPlayerId,
-              playerToken: 'reconnected',
+              playerToken: msg.playerToken!,
               state: room.getRoomState()
             });
             return;
@@ -538,12 +679,26 @@ wss.on('connection', (ws: WebSocket, req) => {
             return;
           }
 
-          const player = room.addPlayer(msg.playerName || 'Player', false, msg.avatarSeed, ws, joinUserId);
-          const token = 'tok_' + Math.random().toString(36).substring(2, 12);
+          if (joinUserId && Array.from(room.players.values()).some(p => p.userId === joinUserId)) {
+            send({ type: 'ERROR', message: 'You are already in this room.' });
+            return;
+          }
+
+          if (isActionOnCooldown(rateState, 'JOIN_ROOM')) {
+            send({ type: 'ERROR', message: 'Action too fast — please wait' });
+            return;
+          }
+
+          leavePreviousRoom(room.roomId);
+          const safeJoinName = typeof msg.playerName === 'string' ? msg.playerName : 'Player';
+          const safeJoinSeed = typeof msg.avatarSeed === 'string' ? msg.avatarSeed : undefined;
+          const player = room.addPlayer(safeJoinName, false, safeJoinSeed, ws, joinUserId);
+          const token = `tok_${crypto.randomBytes(16).toString('hex')}`;
           roomManager.registerSession(token, room.roomId, player.id);
 
           currentPlayerId = player.id;
           currentRoomId = room.roomId;
+          recordActionCooldown(rateState, 'JOIN_ROOM');
 
           send({
             type: 'ROOM_JOINED',
@@ -558,8 +713,8 @@ wss.on('connection', (ws: WebSocket, req) => {
         }
 
         case 'LEAVE_ROOM': {
-          const room = roomManager.getRoom(msg.roomId);
-          if (room && currentPlayerId) {
+          const room = typeof msg.roomId === 'string' ? roomManager.getRoom(msg.roomId) : undefined;
+          if (room && currentPlayerId && room.roomId === currentRoomId) {
             room.removePlayer(currentPlayerId, true);
             currentPlayerId = null;
             currentRoomId = null;
@@ -568,16 +723,20 @@ wss.on('connection', (ws: WebSocket, req) => {
         }
 
         case 'TOGGLE_READY': {
-          const room = roomManager.getRoom(msg.roomId);
-          if (room && currentPlayerId) {
+          const room = typeof msg.roomId === 'string' ? roomManager.getRoom(msg.roomId) : undefined;
+          if (room && currentPlayerId && room.roomId === currentRoomId) {
             room.setPlayerReady(currentPlayerId);
           }
           break;
         }
 
         case 'CHANGE_COLOR': {
-          const room = roomManager.getRoom(msg.roomId);
-          if (room && currentPlayerId) {
+          const room = typeof msg.roomId === 'string' ? roomManager.getRoom(msg.roomId) : undefined;
+          if (room && currentPlayerId && room.roomId === currentRoomId) {
+            if (!PLAYER_COLORS.includes(msg.requestedColor)) {
+              send({ type: 'ERROR', message: 'Invalid color selection.' });
+              return;
+            }
             const success = room.changePlayerColor(currentPlayerId, msg.requestedColor);
             if (!success) {
               send({ type: 'ERROR', message: `Color ${msg.requestedColor} is already chosen.` });
@@ -587,80 +746,164 @@ wss.on('connection', (ws: WebSocket, req) => {
         }
 
         case 'ADD_BOT': {
-          const room = roomManager.getRoom(msg.roomId);
-          if (room && room.hostId === currentPlayerId && room.status === 'WAITING') {
-            room.addBot(msg.botName);
+          const room = typeof msg.roomId === 'string' ? roomManager.getRoom(msg.roomId) : undefined;
+          if (room && room.roomId === currentRoomId && room.hostId === currentPlayerId && room.status === 'WAITING') {
+            if (isActionOnCooldown(rateState, 'ADD_BOT')) {
+              send({ type: 'ERROR', message: 'Action too fast — please wait' });
+              return;
+            }
+            const added = room.addBot(typeof msg.botName === 'string' ? msg.botName : undefined);
+            if (added) {
+              recordActionCooldown(rateState, 'ADD_BOT');
+            }
           }
           break;
         }
 
         case 'REMOVE_BOT': {
-          const room = roomManager.getRoom(msg.roomId);
-          if (room && room.hostId === currentPlayerId && room.status === 'WAITING') {
-            room.removeBot(msg.botId);
+          const room = typeof msg.roomId === 'string' ? roomManager.getRoom(msg.roomId) : undefined;
+          if (room && room.roomId === currentRoomId && room.hostId === currentPlayerId && room.status === 'WAITING' && typeof msg.botId === 'string') {
+            if (isActionOnCooldown(rateState, 'REMOVE_BOT')) {
+              send({ type: 'ERROR', message: 'Action too fast — please wait' });
+              return;
+            }
+            if (room.removeBot(msg.botId)) {
+              recordActionCooldown(rateState, 'REMOVE_BOT');
+            }
+          }
+          break;
+        }
+
+        case 'KICK_PLAYER': {
+          const room = typeof msg.roomId === 'string' ? roomManager.getRoom(msg.roomId) : undefined;
+          if (!room || !currentPlayerId || room.roomId !== currentRoomId) return;
+          if (typeof msg.playerId !== 'string' || !msg.playerId) {
+            send({ type: 'ERROR', message: 'Invalid target player ID.' });
+            return;
+          }
+          const kickResult = room.kickPlayer(currentPlayerId, msg.playerId);
+          if (!kickResult.success) {
+            send({ type: 'ERROR', message: kickResult.error || 'Unable to kick player.' });
+            return;
+          }
+          if (kickResult.ws && kickResult.ws.readyState === WebSocket.OPEN) {
+            kickResult.ws.send(JSON.stringify({ type: 'ERROR', message: 'You were removed from the room by the host.' }));
+            kickResult.ws.close(4002, 'Kicked by host');
           }
           break;
         }
 
         case 'START_GAME': {
-          const room = roomManager.getRoom(msg.roomId);
-          if (!room) return;
+          const room = typeof msg.roomId === 'string' ? roomManager.getRoom(msg.roomId) : undefined;
+          if (!room || !currentPlayerId || room.roomId !== currentRoomId) return;
           if (room.hostId !== currentPlayerId) {
             send({ type: 'ERROR', message: 'Only the party host can start the game.' });
             return;
           }
-
-          if (room.getPlayerCount() < 2) {
-            send({ type: 'ERROR', message: 'Need at least 2 players to start a game (you can add bots or invite friends).' });
+          if (room.status === 'IN_PROGRESS') {
+            send({ type: 'ERROR', message: 'Game is already in progress.' });
+            return;
+          }
+          if (room.status === 'WAITING' && Array.from(room.players.values()).some(p => !p.isConnected && !p.isBot)) {
+            send({ type: 'ERROR', message: 'Waiting for disconnected player to reconnect before starting.' });
+            return;
+          }
+          if (isActionOnCooldown(rateState, 'START_GAME')) {
+            send({ type: 'ERROR', message: 'Action too fast — please wait' });
             return;
           }
 
-          room.startGame();
+          if (!room.startGame()) {
+            send({ type: 'ERROR', message: 'Need at least 2 active players to start a game.' });
+            return;
+          }
+          recordActionCooldown(rateState, 'START_GAME');
+          break;
+        }
+
+        case 'RETURN_TO_LOBBY': {
+          const room = typeof msg.roomId === 'string' ? roomManager.getRoom(msg.roomId) : undefined;
+          if (!room || !currentPlayerId || room.roomId !== currentRoomId) return;
+          if (room.hostId !== currentPlayerId) {
+            send({ type: 'ERROR', message: 'Only the party host can return to the lobby.' });
+            return;
+          }
+          if (isActionOnCooldown(rateState, 'RETURN_TO_LOBBY')) {
+            send({ type: 'ERROR', message: 'Action too fast — please wait' });
+            return;
+          }
+          if (room.returnToLobby(currentPlayerId)) {
+            recordActionCooldown(rateState, 'RETURN_TO_LOBBY');
+          }
           break;
         }
 
         case 'PLACE_PIECE': {
-          const room = roomManager.getRoom(msg.roomId);
-          if (!room || !currentPlayerId) return;
+          const room = typeof msg.roomId === 'string' ? roomManager.getRoom(msg.roomId) : undefined;
+          if (!room || !currentPlayerId || room.roomId !== currentRoomId) return;
 
-          // ── Input sanitization: clamp rotation, flip, origin to valid ranges ──
-          const safeRotation = [0, 90, 180, 270].includes(msg.rotation) ? msg.rotation : 0;
+          if (typeof msg.rotation !== 'number' || !Number.isInteger(msg.rotation) || ![0, 90, 180, 270].includes(msg.rotation)) {
+            send({ type: 'MOVE_REJECTED', reason: 'Invalid rotation' });
+            return;
+          }
+          if (
+            typeof msg.originX !== 'number' || !Number.isInteger(msg.originX) ||
+            typeof msg.originY !== 'number' || !Number.isInteger(msg.originY) ||
+            msg.originX < 0 || msg.originX >= 20 ||
+            msg.originY < 0 || msg.originY >= 20
+          ) {
+            send({ type: 'MOVE_REJECTED', reason: 'Coordinates out of bounds' });
+            return;
+          }
+
+          const turnKey = `${room.roomId}:${room.round}:${room.currentTurn}`;
+          if (isTurnActionOnCooldown(rateState, 'PLACE_PIECE', turnKey)) {
+            send({ type: 'ERROR', message: 'Action too fast — please wait' });
+            return;
+          }
+
           const safeFlip = msg.flip === true;
-          const safeOriginX = Math.max(0, Math.min(19, Math.floor(Number(msg.originX) || 0)));
-          const safeOriginY = Math.max(0, Math.min(19, Math.floor(Number(msg.originY) || 0)));
           const safePieceId = typeof msg.pieceId === 'string' ? msg.pieceId : '';
 
           const res = room.handleMove(
             currentPlayerId,
             safePieceId as any,
-            safeRotation,
+            msg.rotation,
             safeFlip,
-            safeOriginX,
-            safeOriginY
+            msg.originX,
+            msg.originY
           );
 
           if (!res.success) {
             send({ type: 'MOVE_REJECTED', reason: res.reason || 'Invalid move' });
+          } else {
+            recordTurnActionCooldown(rateState, 'PLACE_PIECE', turnKey);
           }
           break;
         }
 
         case 'PASS_TURN': {
-          const room = roomManager.getRoom(msg.roomId);
-          if (room && currentPlayerId) {
-            room.handlePass(currentPlayerId);
+          const room = typeof msg.roomId === 'string' ? roomManager.getRoom(msg.roomId) : undefined;
+          if (!room || !currentPlayerId || room.roomId !== currentRoomId) return;
+          if (room.status !== 'IN_PROGRESS' || room.getColorControllerId(room.currentTurn) !== currentPlayerId) {
+            return;
           }
+          const turnKey = `${room.roomId}:${room.round}:${room.currentTurn}`;
+          if (isTurnActionOnCooldown(rateState, 'PASS_TURN', turnKey)) {
+            send({ type: 'ERROR', message: 'Action too fast — please wait' });
+            return;
+          }
+          room.handlePass(currentPlayerId);
+          recordTurnActionCooldown(rateState, 'PASS_TURN', turnKey);
           break;
         }
 
         case 'CHAT': {
-          const room = roomManager.getRoom(msg.roomId);
-          if (room && currentPlayerId) {
+          const room = typeof msg.roomId === 'string' ? roomManager.getRoom(msg.roomId) : undefined;
+          if (room && currentPlayerId && room.roomId === currentRoomId) {
             const sender = room.players.get(currentPlayerId);
             if (sender) {
-              // ── Chat sanitization: trim, limit length, strip HTML ──
-              let safeMessage = (typeof msg.message === 'string' ? msg.message : '').trim().substring(0, 200);
-              safeMessage = safeMessage.replace(/<[^>]*>/g, ''); // strip HTML tags
+              const safeMessage = sanitizeDisplayText(msg.message, 200, '');
               if (!safeMessage) break; // reject empty after sanitization
 
               room.broadcast({
@@ -676,10 +919,10 @@ wss.on('connection', (ws: WebSocket, req) => {
         }
 
         case 'PING': {
-          (ws as any).isAlive = true;
+          (ws as any).missedPongs = 0;
           send({
             type: 'PONG',
-            clientTs: msg.clientTs,
+            clientTs: Number(msg.clientTs) || Date.now(),
             serverTs: Date.now()
           });
           break;
@@ -717,15 +960,16 @@ wss.on('connection', (ws: WebSocket, req) => {
 // Periodic heartbeat to actively detect dropped/suspended mobile connections
 const heartbeatInterval = setInterval(() => {
   wss.clients.forEach((clientWs) => {
+    if (clientWs.readyState !== WebSocket.OPEN) return;
     const extWs = clientWs as any;
-    if (extWs.isAlive === false) {
+    if ((extWs.missedPongs || 0) >= 2) {
       console.log('[Heartbeat] Terminating inactive/hung socket');
       return clientWs.terminate();
     }
-    extWs.isAlive = false;
+    extWs.missedPongs = (extWs.missedPongs || 0) + 1;
     clientWs.ping();
   });
-}, 5000);
+}, 15000);
 
 wss.on('close', () => {
   clearInterval(heartbeatInterval);

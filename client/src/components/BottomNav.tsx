@@ -6,7 +6,6 @@ export type TabId = 'PLAY' | 'LEADERBOARD' | 'PROFILE';
 interface BottomNavProps {
   activeTab: TabId;
   onTabChange: (tab: TabId) => void;
-  isAuthenticated?: boolean;
 }
 
 const TABS: { id: TabId; label: string; Icon: React.FC<{ size?: number; strokeWidth?: number }> }[] = [
@@ -18,13 +17,12 @@ const TABS: { id: TabId; label: string; Icon: React.FC<{ size?: number; strokeWi
 export const BottomNav: React.FC<BottomNavProps> = ({ activeTab, onTabChange }) => {
   return (
     <div
+      className="bottom-nav"
       style={{
         position: 'fixed',
         bottom: 0,
         left: '50%',
         transform: 'translateX(-50%)',
-        width: '100%',
-        maxWidth: 480,
         background: 'rgba(255, 255, 255, 0.92)',
         backdropFilter: 'blur(20px)',
         WebkitBackdropFilter: 'blur(20px)',

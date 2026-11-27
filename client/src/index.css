@@ -203,23 +203,49 @@ body {
   }
 }
 
-.offline-pulse {
-  animation: disconnectPulse 1.8s infinite ease-in-out;
-}
-
 @keyframes slideDownAlert {
   from {
-    transform: translate(-50%, -120%);
+    transform: translateY(-16px);
     opacity: 0;
   }
   to {
-    transform: translate(-50%, 0);
+    transform: translateY(0);
     opacity: 1;
   }
 }
 
 .slide-down-alert {
   animation: slideDownAlert 0.28s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+@keyframes slideDownToast {
+  from {
+    transform: translateY(-120%);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
+    opacity: 1;
+  }
+}
+
+.slide-down-toast {
+  animation: slideDownToast 0.28s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+.bottom-nav {
+  width: 100%;
+  max-width: 480px;
+}
+
+@media (min-width: 900px) {
+  .bottom-nav {
+    max-width: 580px;
+  }
+}
+
+.nudge-btn:active:not(:disabled) {
+  transform: scale(0.94);
 }
 
 /* Custom Scrollbars */
